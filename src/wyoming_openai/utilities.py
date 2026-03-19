@@ -1,4 +1,5 @@
 import argparse
+import json
 from collections.abc import Callable
 from enum import Enum
 from io import BytesIO
@@ -46,6 +47,36 @@ def create_enum_parser[E: Enum](enum_class: type[E], case_insensitive: bool = Tr
             ) from exc
 
     return parse_enum
+
+
+def create_json_object_parser(option_name: str) -> Callable[[str], dict[str, object]]:
+    """
+    Create an argparse parser that validates a JSON object string.
+
+    Args:
+        option_name: Human-readable option name to include in error messages.
+
+    Returns:
+        A callable that parses a JSON object string into a dictionary.
+
+    Raises:
+        argparse.ArgumentTypeError: When the value is not valid JSON or is not a JSON object.
+    """
+
+    def parse_json_object(value: str) -> dict[str, object]:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise argparse.ArgumentTypeError(f"Invalid {option_name}: {exc.msg}") from exc
+
+        if not isinstance(parsed, dict):
+            raise argparse.ArgumentTypeError(
+                f"Invalid {option_name}: expected a JSON object, got {type(parsed).__name__}"
+            )
+
+        return parsed
+
+    return parse_json_object
 
 
 class NamedBytesIO(BytesIO):

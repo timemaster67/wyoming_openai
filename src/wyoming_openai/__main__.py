@@ -18,7 +18,7 @@ from .compatibility import (
 )
 from .const import DEFAULT_OPENAI_BASE_URL, __version__
 from .handler import OpenAIEventHandler
-from .utilities import create_enum_parser
+from .utilities import create_enum_parser, create_json_object_parser
 
 
 def configure_logging(level):
@@ -35,6 +35,8 @@ async def main():
 
     # Create reusable enum parser for backend arguments
     backend_parser = create_enum_parser(OpenAIBackend)
+    stt_extra_body_parser = create_json_object_parser("STT extra body")
+    tts_extra_body_parser = create_json_object_parser("TTS extra body")
 
     stt_backend_env = os.getenv("STT_BACKEND")
     stt_backend_default = None
@@ -49,6 +51,22 @@ async def main():
     if tts_backend_env:
         try:
             tts_backend_default = backend_parser(tts_backend_env)
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
+
+    stt_extra_body_env = os.getenv("STT_EXTRA_BODY")
+    stt_extra_body_default = None
+    if stt_extra_body_env:
+        try:
+            stt_extra_body_default = stt_extra_body_parser(stt_extra_body_env)
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
+
+    tts_extra_body_env = os.getenv("TTS_EXTRA_BODY")
+    tts_extra_body_default = None
+    if tts_extra_body_env:
+        try:
+            tts_extra_body_default = tts_extra_body_parser(tts_extra_body_env)
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
 
@@ -102,6 +120,12 @@ async def main():
     )
     parser.add_argument("--stt-prompt", default=os.getenv("STT_PROMPT", None), help="Optional prompt for STT requests")
     parser.add_argument(
+        "--stt-extra-body",
+        type=stt_extra_body_parser,
+        default=stt_extra_body_default,
+        help="Optional JSON object merged into STT request extra_body",
+    )
+    parser.add_argument(
         "--stt-streaming-models",
         nargs="+",
         default=os.getenv("STT_STREAMING_MODELS", "").split(),
@@ -146,6 +170,12 @@ async def main():
     )
     parser.add_argument(
         "--tts-instructions", default=os.getenv("TTS_INSTRUCTIONS", None), help="Optional instructions for TTS requests"
+    )
+    parser.add_argument(
+        "--tts-extra-body",
+        type=tts_extra_body_parser,
+        default=tts_extra_body_default,
+        help="Optional JSON object merged into TTS request extra_body",
     )
     parser.add_argument(
         "--tts-streaming-models",
@@ -293,6 +323,8 @@ async def main():
                 tts_speed=args.tts_speed,
                 tts_instructions=args.tts_instructions,
                 stt_prompt=args.stt_prompt,
+                stt_extra_body=args.stt_extra_body,
+                tts_extra_body=args.tts_extra_body,
                 tts_streaming_min_words=args.tts_streaming_min_words,
                 tts_streaming_max_chars=args.tts_streaming_max_chars,
             )

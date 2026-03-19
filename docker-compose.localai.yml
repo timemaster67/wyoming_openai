@@ -15,6 +15,7 @@ services:
       TTS_OPENAI_URL: http://localai:8080/v1
       TTS_MODELS: "en-us-kathleen-low.onnx en-us-amy-low.onnx en-us-danny-low.onnx en-us-lessac-low.onnx en-us-lessac-medium.onnx en-us-libritts-high.onnx en-us-ryan-high.onnx en-us-ryan-low.onnx en-us-ryan-medium.onnx"
       TTS_BACKEND: "LOCALAI"
+      TTS_EXTRA_BODY: '{"stream": true}'
     depends_on:
       localai:
         condition: service_healthy

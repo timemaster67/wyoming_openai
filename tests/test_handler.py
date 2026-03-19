@@ -8,6 +8,7 @@ from wyoming.asr import Transcript
 from wyoming.event import Event
 from wyoming.tts import SynthesizeChunk, SynthesizeStart, SynthesizeVoice
 
+from wyoming_openai.compatibility import OpenAIBackend
 from wyoming_openai.handler import (
     OpenAIEventHandler,
     TtsStreamError,
@@ -471,6 +472,40 @@ class TestOpenAIEventHandlerComprehensive:
         assert transcript_found
 
     @pytest.mark.asyncio
+    async def test_handle_transcribe_merges_configured_and_backend_extra_body(self, enhanced_handler, mock_clients):
+        """Test STT request extra_body merges user config with backend-specific fields."""
+        stt_client, _ = mock_clients
+        stt_client.backend = OpenAIBackend.SPEACHES
+        enhanced_handler._stt_extra_body = {"foo": "bar", "vad_filter": True}
+
+        mock_transcription = Mock()
+        mock_transcription.text = "Test transcription"
+        stt_client.audio.transcriptions.create = AsyncMock(return_value=mock_transcription)
+
+        transcribe_event = Event(type="transcribe", data={"language": "en", "name": "whisper-1"})
+        assert await enhanced_handler.handle_event(transcribe_event) is True
+
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 16000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 16000, "width": 2, "channels": 1}, payload=b"\x00\x01" * 1000)
+        )
+
+        with patch("wyoming_openai.handler.isinstance") as mock_isinstance:
+
+            def isinstance_side_effect(obj, class_or_tuple):
+                if obj is mock_transcription:
+                    from openai.types.audio.transcription_create_response import TranscriptionCreateResponse
+
+                    return class_or_tuple is TranscriptionCreateResponse
+                return builtins.isinstance(obj, class_or_tuple)
+
+            mock_isinstance.side_effect = isinstance_side_effect
+            await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        call_args = stt_client.audio.transcriptions.create.call_args.kwargs
+        assert call_args["extra_body"] == {"foo": "bar", "vad_filter": False}
+
+    @pytest.mark.asyncio
     async def test_handle_synthesize_event(self, enhanced_handler, mock_clients):
         """Test handling of Synthesize event."""
         _, tts_client = mock_clients
@@ -533,6 +568,54 @@ class TestOpenAIEventHandlerComprehensive:
         event_types = [call[0][0].type for call in enhanced_handler.write_event.call_args_list]
         assert "audio-start" in event_types
         assert "audio-stop" in event_types
+
+    @pytest.mark.asyncio
+    async def test_handle_synthesize_event_includes_configured_tts_extra_body(self, enhanced_handler, mock_clients):
+        """Test buffered TTS requests include configured extra_body."""
+        _, tts_client = mock_clients
+        enhanced_handler._tts_extra_body = {"stream": True}
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01" * 1000)
+        wav_buffer.seek(0)
+        mock_audio_data = wav_buffer.read()
+
+        class MockAsyncIterator:
+            def __init__(self, data):
+                self.data = data
+                self.chunks = [data[i : i + 2048] for i in range(0, len(data), 2048)]
+                self.index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.chunks):
+                    raise StopAsyncIteration
+                chunk = self.chunks[self.index]
+                self.index += 1
+                return chunk
+
+        mock_response = Mock()
+        mock_response.iter_bytes = Mock(return_value=MockAsyncIterator(mock_audio_data))
+
+        mock_stream_response = AsyncMock()
+        mock_stream_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_response.__aexit__ = AsyncMock(return_value=None)
+
+        tts_client.audio.speech.with_streaming_response.create = Mock(return_value=mock_stream_response)
+
+        event = Event(
+            type="synthesize", data={"text": "Hello world", "voice": {"name": "alloy"}, "raw_text": "Hello world"}
+        )
+        assert await enhanced_handler.handle_event(event) is True
+
+        call_args = tts_client.audio.speech.with_streaming_response.create.call_args.kwargs
+        assert call_args["extra_body"] == {"stream": True}
 
     @pytest.mark.asyncio
     async def test_handle_streaming_synthesis(self, enhanced_handler, mock_clients):
@@ -613,6 +696,56 @@ class TestOpenAIEventHandlerComprehensive:
         assert "synthesize-stopped" in event_types  # Confirms streaming synthesis completion
         assert "audio-start" in event_types  # Audio should be generated
         assert "audio-stop" in event_types
+
+    @pytest.mark.asyncio
+    async def test_stream_tts_audio_incremental_includes_configured_tts_extra_body(
+        self, enhanced_handler, mock_clients
+    ):
+        """Test incremental TTS requests include configured extra_body."""
+        _, tts_client = mock_clients
+        enhanced_handler._tts_extra_body = {"stream": True}
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01" * 1000)
+        wav_buffer.seek(0)
+        mock_audio_data = wav_buffer.read()
+
+        class MockAsyncIterator:
+            def __init__(self, data):
+                self.data = data
+                self.chunks = [data[i : i + 2048] for i in range(0, len(data), 2048)]
+                self.index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.chunks):
+                    raise StopAsyncIteration
+                chunk = self.chunks[self.index]
+                self.index += 1
+                return chunk
+
+        mock_response = Mock()
+        mock_response.iter_bytes = Mock(return_value=MockAsyncIterator(mock_audio_data))
+
+        mock_stream_response = AsyncMock()
+        mock_stream_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_response.__aexit__ = AsyncMock(return_value=None)
+
+        tts_client.audio.speech.with_streaming_response.create = Mock(return_value=mock_stream_response)
+
+        voice = enhanced_handler._get_voice("alloy")
+        assert voice is not None
+
+        await enhanced_handler._stream_tts_audio_incremental("Hello world", voice)
+
+        call_args = tts_client.audio.speech.with_streaming_response.create.call_args.kwargs
+        assert call_args["extra_body"] == {"stream": True}
 
     @pytest.mark.asyncio
     async def test_handle_transcribe_with_streaming(self, enhanced_handler, mock_clients, mock_info):
