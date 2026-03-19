@@ -123,7 +123,10 @@ async def main():
         "--stt-extra-body",
         type=stt_extra_body_parser,
         default=stt_extra_body_default,
-        help="Optional JSON object merged into STT request extra_body",
+        help=(
+            "Optional JSON object merged into the STT request body via extra_body; "
+            "overlapping keys override top-level request fields"
+        ),
     )
     parser.add_argument(
         "--stt-streaming-models",
@@ -175,7 +178,10 @@ async def main():
         "--tts-extra-body",
         type=tts_extra_body_parser,
         default=tts_extra_body_default,
-        help="Optional JSON object merged into TTS request extra_body",
+        help=(
+            "Optional JSON object merged into the TTS request body via extra_body; "
+            "overlapping keys override top-level request fields"
+        ),
     )
     parser.add_argument(
         "--tts-streaming-models",
