@@ -155,6 +155,140 @@ def test_validate_tts_language(handler):
     assert handler._validate_tts_language("en", voice)
 
 
+def test_init_rejects_unsupported_stt_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    with pytest.raises(ValueError, match="STT extra_body response_format must be one of 'json'"):
+        OpenAIEventHandler(
+            reader,
+            writer,
+            info=dummy_info,
+            stt_client=stt_client,
+            tts_client=tts_client,
+            stt_extra_body={"response_format": "text"},
+        )
+
+
+def test_init_rejects_non_string_stt_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    with pytest.raises(ValueError, match="got \\['json'\\]"):
+        OpenAIEventHandler(
+            reader,
+            writer,
+            info=dummy_info,
+            stt_client=stt_client,
+            tts_client=tts_client,
+            stt_extra_body={"response_format": ["json"]},
+        )
+
+
+def test_init_rejects_null_stt_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    with pytest.raises(ValueError, match="got None"):
+        OpenAIEventHandler(
+            reader,
+            writer,
+            info=dummy_info,
+            stt_client=stt_client,
+            tts_client=tts_client,
+            stt_extra_body={"response_format": None},
+        )
+
+
+def test_init_allows_unused_stt_response_format_without_asr(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+    dummy_info.asr = []
+
+    OpenAIEventHandler(
+        reader,
+        writer,
+        info=dummy_info,
+        stt_client=stt_client,
+        tts_client=tts_client,
+        stt_extra_body={"response_format": "text"},
+    )
+
+
+def test_init_rejects_undecodable_tts_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    with pytest.raises(ValueError, match="TTS extra_body response_format must be one of 'pcm', 'wav'"):
+        OpenAIEventHandler(
+            reader,
+            writer,
+            info=dummy_info,
+            stt_client=stt_client,
+            tts_client=tts_client,
+            tts_extra_body={"response_format": "mp3"},
+        )
+
+
+def test_init_rejects_non_string_tts_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    with pytest.raises(ValueError, match="got \\['wav'\\]"):
+        OpenAIEventHandler(
+            reader,
+            writer,
+            info=dummy_info,
+            stt_client=stt_client,
+            tts_client=tts_client,
+            tts_extra_body={"response_format": ["wav"]},
+        )
+
+
+def test_init_rejects_null_tts_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    with pytest.raises(ValueError, match="got None"):
+        OpenAIEventHandler(
+            reader,
+            writer,
+            info=dummy_info,
+            stt_client=stt_client,
+            tts_client=tts_client,
+            tts_extra_body={"response_format": None},
+        )
+
+
+def test_init_allows_pcm_tts_response_format(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+
+    OpenAIEventHandler(
+        reader,
+        writer,
+        info=dummy_info,
+        stt_client=stt_client,
+        tts_client=tts_client,
+        tts_extra_body={"response_format": "pcm"},
+    )
+
+
+def test_init_allows_unused_tts_response_format_without_tts(dummy_info, dummy_clients, dummy_reader_writer):
+    stt_client, tts_client = dummy_clients
+    reader, writer = dummy_reader_writer
+    dummy_info.tts = []
+
+    OpenAIEventHandler(
+        reader,
+        writer,
+        info=dummy_info,
+        stt_client=stt_client,
+        tts_client=tts_client,
+        tts_extra_body={"response_format": "mp3"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_streaming_chunk_failure_aborts(handler):
     handler._wyoming_info.tts[0].supports_synthesize_streaming = True

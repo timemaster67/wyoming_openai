@@ -109,11 +109,23 @@ class OpenAIEventHandler(AsyncEventHandler):
         self._stt_temperature = stt_temperature
         self._stt_prompt = stt_prompt
         self._stt_extra_body = dict(stt_extra_body) if stt_extra_body else None
+        if self._has_asr_models():
+            self._validate_extra_body_response_format(
+                self._stt_extra_body,
+                allowed_formats={"json"},
+                body_name="STT",
+            )
 
         self._tts_client = tts_client
         self._tts_speed = tts_speed
         self._tts_instructions = tts_instructions
         self._tts_extra_body = dict(tts_extra_body) if tts_extra_body else None
+        if self._has_tts_voices():
+            self._validate_extra_body_response_format(
+                self._tts_extra_body,
+                allowed_formats={"pcm", "wav"},
+                body_name="TTS",
+            )
         self._tts_streaming_min_words = tts_streaming_min_words
         self._tts_streaming_max_chars = tts_streaming_max_chars
 
@@ -310,6 +322,34 @@ class OpenAIEventHandler(AsyncEventHandler):
                 if model.name == model_name or not model_name:
                     return model
         return None
+
+    def _has_asr_models(self) -> bool:
+        """Return True when STT is configured for this handler."""
+        return any(getattr(program, "models", None) for program in self._wyoming_info.asr)
+
+    def _has_tts_voices(self) -> bool:
+        """Return True when TTS is configured for this handler."""
+        return any(getattr(program, "voices", None) for program in self._wyoming_info.tts)
+
+    @staticmethod
+    def _validate_extra_body_response_format(
+        extra_body: dict[str, object] | None, *, allowed_formats: set[str], body_name: str
+    ) -> None:
+        """Reject response formats that the handler cannot decode."""
+        if not extra_body:
+            return
+
+        if "response_format" not in extra_body:
+            return
+
+        response_format = extra_body["response_format"]
+        if isinstance(response_format, str) and response_format in allowed_formats:
+            return
+
+        expected_formats = ", ".join(repr(fmt) for fmt in sorted(allowed_formats))
+        raise ValueError(
+            f"{body_name} extra_body response_format must be one of {expected_formats}; got {response_format!r}"
+        )
 
     def _get_stt_extra_body(self) -> dict[str, object] | None:
         """Get STT extra_body merged with backend-specific fields."""
