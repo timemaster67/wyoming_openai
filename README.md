@@ -234,7 +234,6 @@ LocalAI is a drop-in replacement for OpenAI API that runs completely locally, su
   - Provides OpenAI-compatible endpoints for seamless integration
   - No API keys required since everything runs locally
   - Includes automatic model initialization via dedicated init container
-  - Sets `TTS_EXTRA_BODY='{"stream": true}'` in the example compose to enable LocalAI's lower-latency streaming TTS path
   - [Learn more about LocalAI](https://localai.io/)
 
 - **Docker Compose Configuration**: Use the `docker-compose.localai.yml` template which includes configuration for both the Wyoming OpenAI proxy and LocalAI service.

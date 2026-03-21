@@ -30,6 +30,40 @@ async def test_main_rejects_invalid_tts_extra_body_cli(monkeypatch, capsys):
     assert "Invalid TTS extra body" in capsys.readouterr().err
 
 
+@pytest.mark.asyncio
+async def test_main_rejects_invalid_stt_response_format_before_server_start(monkeypatch, capsys):
+    async def fake_factory(*args, **kwargs):
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        main_module.CustomAsyncOpenAI,
+        "create_autodetected_factory",
+        staticmethod(lambda: fake_factory),
+    )
+    monkeypatch.setattr(
+        main_module.AsyncServer,
+        "from_uri",
+        staticmethod(lambda uri: _CapturingServer()),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming_openai",
+            "--stt-models",
+            "whisper-1",
+            "--stt-extra-body",
+            '{"response_format":"text"}',
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main()
+
+    assert exc_info.value.code == 2
+    assert "STT extra_body response_format must be one of 'json'" in capsys.readouterr().err
+
+
 class _FakeClient:
     def __init__(self):
         self.backend = None

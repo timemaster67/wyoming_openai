@@ -79,6 +79,34 @@ def create_json_object_parser(option_name: str) -> Callable[[str], dict[str, obj
     return parse_json_object
 
 
+def validate_extra_body_response_format(
+    extra_body: dict[str, object] | None, *, allowed_formats: set[str], body_name: str
+) -> None:
+    """
+    Reject response formats that the handler cannot decode.
+
+    Args:
+        extra_body: Optional extra request fields to validate.
+        allowed_formats: Response formats supported by the consumer.
+        body_name: Human-readable request name for the error message.
+
+    Raises:
+        ValueError: When extra_body requests an unsupported response_format.
+    """
+    if not extra_body:
+        return
+
+    if "response_format" not in extra_body:
+        return
+
+    response_format = extra_body["response_format"]
+    if isinstance(response_format, str) and response_format in allowed_formats:
+        return
+
+    expected_formats = ", ".join(repr(fmt) for fmt in sorted(allowed_formats))
+    raise ValueError(f"{body_name} extra_body response_format must be one of {expected_formats}; got {response_format!r}")
+
+
 class NamedBytesIO(BytesIO):
     """
     A subclass of BytesIO that adds a 'name' attribute to the file-like object.
