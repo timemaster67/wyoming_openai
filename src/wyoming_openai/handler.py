@@ -134,6 +134,7 @@ class OpenAIEventHandler(AsyncEventHandler):
         self._wav_write_buffer: wave.Wave_write | None = None
         self._is_recording: bool = False
         self._current_asr_model: AsrModel | None = None
+        self._current_language: str | None = None
 
         # State for event logging
         self._last_event_type: str | None = None
@@ -208,11 +209,18 @@ class OpenAIEventHandler(AsyncEventHandler):
 
     async def _handle_transcribe(self, transcribe: Transcribe) -> bool:
         """Handle transcription request"""
-        self._current_asr_model = self._get_asr_model(transcribe.name)
-        if self._current_asr_model:
-            if self._is_asr_language_supported(transcribe.language, self._current_asr_model):
+        requested_model = self._get_asr_model(transcribe.name)
+        requested_language = transcribe.language
+
+        self._current_asr_model = None
+        self._current_language = None
+
+        if requested_model:
+            if self._is_asr_language_supported(requested_language, requested_model):
+                self._current_asr_model = requested_model
+                self._current_language = requested_language
                 return True
-            self._log_unsupported_asr_language(transcribe.name, transcribe.language)
+            self._log_unsupported_asr_language(transcribe.name, requested_language)
         else:
             self._log_unsupported_asr_model(transcribe.name)
         return False
@@ -263,6 +271,7 @@ class OpenAIEventHandler(AsyncEventHandler):
             transcription_kwargs = {
                 "file": self._wav_buffer,
                 "model": self._current_asr_model.name,
+                "language": self._current_language if self._current_language is not None else omit,
                 "temperature": self._stt_temperature if self._stt_temperature is not None else omit,
                 "prompt": self._stt_prompt if self._stt_prompt is not None else omit,
                 "response_format": "json",
