@@ -458,6 +458,8 @@ class TestOpenAIEventHandlerComprehensive:
 
         # Verify transcription was called
         stt_client.audio.transcriptions.create.assert_called_once()
+        call_args = stt_client.audio.transcriptions.create.call_args[1]
+        assert call_args["language"] == "en"
 
         # Find the Transcript event in the write_event calls
         transcript_found = False
@@ -672,6 +674,54 @@ class TestOpenAIEventHandlerComprehensive:
         result = await enhanced_handler.handle_event(event)
 
         assert result is False
+        assert enhanced_handler._current_asr_model is None
+        assert enhanced_handler._current_language is None
+
+    @pytest.mark.asyncio
+    async def test_unsupported_language_does_not_call_transcription_create(self, enhanced_handler, mock_clients):
+        """Test that rejected transcription requests do not reach the STT backend."""
+        stt_client, _ = mock_clients
+        stt_client.audio.transcriptions.create = AsyncMock()
+
+        result = await enhanced_handler.handle_event(
+            Event(type="transcribe", data={"language": "zh", "name": "whisper-1"})
+        )
+
+        assert result is False
+
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 16000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 16000, "width": 2, "channels": 1}, payload=b"\x00\x01" * 100)
+        )
+        await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        stt_client.audio.transcriptions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_transcribe_clears_previous_request_state(self, enhanced_handler, mock_clients):
+        """Test that a failed Transcribe request clears any previously accepted STT request."""
+        stt_client, _ = mock_clients
+        stt_client.audio.transcriptions.create = AsyncMock()
+
+        valid_result = await enhanced_handler.handle_event(
+            Event(type="transcribe", data={"language": "en", "name": "whisper-1"})
+        )
+        invalid_result = await enhanced_handler.handle_event(
+            Event(type="transcribe", data={"language": "zh", "name": "whisper-1"})
+        )
+
+        assert valid_result is True
+        assert invalid_result is False
+        assert enhanced_handler._current_asr_model is None
+        assert enhanced_handler._current_language is None
+
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 16000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 16000, "width": 2, "channels": 1}, payload=b"\x00\x01" * 100)
+        )
+        await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        stt_client.audio.transcriptions.create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_audio_recording_workflow(self, enhanced_handler, mock_clients):
