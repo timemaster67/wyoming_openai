@@ -355,8 +355,9 @@ class OpenAIEventHandler(AsyncEventHandler):
         """Get STT extra_body merged with backend-specific fields."""
         extra_body = dict(self._stt_extra_body or {})
         if hasattr(self._stt_client, "backend") and self._stt_client.backend == OpenAIBackend.SPEACHES:
-            extra_body["vad_filter"] = False
-            _LOGGER.debug("Adding vad_filter=False for SPEACHES backend")
+            if "vad_filter" not in extra_body:
+                extra_body["vad_filter"] = False
+                _LOGGER.debug("Adding default vad_filter=False for SPEACHES backend")
         return extra_body or None
 
     def _get_tts_extra_body(self) -> dict[str, object] | None:

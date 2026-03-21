@@ -606,11 +606,45 @@ class TestOpenAIEventHandlerComprehensive:
         assert transcript_found
 
     @pytest.mark.asyncio
-    async def test_handle_transcribe_merges_configured_and_backend_extra_body(self, enhanced_handler, mock_clients):
-        """Test STT request extra_body merges user config with backend-specific fields."""
+    async def test_handle_transcribe_preserves_configured_speaches_vad_filter(self, enhanced_handler, mock_clients):
+        """Test STT requests preserve an explicit Speaches vad_filter override."""
         stt_client, _ = mock_clients
         stt_client.backend = OpenAIBackend.SPEACHES
         enhanced_handler._stt_extra_body = {"foo": "bar", "vad_filter": True}
+
+        mock_transcription = Mock()
+        mock_transcription.text = "Test transcription"
+        stt_client.audio.transcriptions.create = AsyncMock(return_value=mock_transcription)
+
+        transcribe_event = Event(type="transcribe", data={"language": "en", "name": "whisper-1"})
+        assert await enhanced_handler.handle_event(transcribe_event) is True
+
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 16000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 16000, "width": 2, "channels": 1}, payload=b"\x00\x01" * 1000)
+        )
+
+        with patch("wyoming_openai.handler.isinstance") as mock_isinstance:
+
+            def isinstance_side_effect(obj, class_or_tuple):
+                if obj is mock_transcription:
+                    from openai.types.audio.transcription_create_response import TranscriptionCreateResponse
+
+                    return class_or_tuple is TranscriptionCreateResponse
+                return builtins.isinstance(obj, class_or_tuple)
+
+            mock_isinstance.side_effect = isinstance_side_effect
+            await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        call_args = stt_client.audio.transcriptions.create.call_args.kwargs
+        assert call_args["extra_body"] == {"foo": "bar", "vad_filter": True}
+
+    @pytest.mark.asyncio
+    async def test_handle_transcribe_adds_default_speaches_vad_filter_when_missing(self, enhanced_handler, mock_clients):
+        """Test STT requests still inject the historical Speaches vad_filter default."""
+        stt_client, _ = mock_clients
+        stt_client.backend = OpenAIBackend.SPEACHES
+        enhanced_handler._stt_extra_body = {"foo": "bar"}
 
         mock_transcription = Mock()
         mock_transcription.text = "Test transcription"
