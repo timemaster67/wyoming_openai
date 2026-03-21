@@ -104,7 +104,10 @@ def validate_extra_body_response_format(
         return
 
     expected_formats = ", ".join(repr(fmt) for fmt in sorted(allowed_formats))
-    raise ValueError(f"{body_name} extra_body response_format must be one of {expected_formats}; got {response_format!r}")
+    raise ValueError(
+        f"{body_name} extra_body response_format must be one of {expected_formats}; "
+        f"got {response_format!r}"
+    )
 
 
 class NamedBytesIO(BytesIO):

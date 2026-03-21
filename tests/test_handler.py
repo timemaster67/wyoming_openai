@@ -640,7 +640,9 @@ class TestOpenAIEventHandlerComprehensive:
         assert call_args["extra_body"] == {"foo": "bar", "vad_filter": True}
 
     @pytest.mark.asyncio
-    async def test_handle_transcribe_adds_default_speaches_vad_filter_when_missing(self, enhanced_handler, mock_clients):
+    async def test_handle_transcribe_adds_default_speaches_vad_filter_when_missing(
+        self, enhanced_handler, mock_clients
+    ):
         """Test STT requests still inject the historical Speaches vad_filter default."""
         stt_client, _ = mock_clients
         stt_client.backend = OpenAIBackend.SPEACHES
