@@ -18,7 +18,7 @@ from .compatibility import (
 )
 from .const import DEFAULT_OPENAI_BASE_URL, __version__
 from .handler import OpenAIEventHandler
-from .utilities import create_enum_parser, create_json_object_parser, validate_extra_body_response_format
+from .utilities import create_enum_parser, create_json_object_parser, validate_stt_extra_body, validate_tts_extra_body
 
 
 def configure_logging(level):
@@ -257,17 +257,9 @@ async def main():
 
         try:
             if asr_programs:
-                validate_extra_body_response_format(
-                    args.stt_extra_body,
-                    allowed_formats={"json"},
-                    body_name="STT",
-                )
+                validate_stt_extra_body(args.stt_extra_body)
             if tts_programs:
-                validate_extra_body_response_format(
-                    args.tts_extra_body,
-                    allowed_formats={"pcm", "wav"},
-                    body_name="TTS",
-                )
+                validate_tts_extra_body(args.tts_extra_body)
         except ValueError as exc:
             parser.error(str(exc))
 

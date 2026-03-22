@@ -29,7 +29,7 @@ from wyoming.tts import (
 )
 
 from .compatibility import CustomAsyncOpenAI, OpenAIBackend, TtsVoiceModel
-from .utilities import NamedBytesIO, validate_extra_body_response_format
+from .utilities import NamedBytesIO, get_extra_body_boolean_field, validate_stt_extra_body, validate_tts_extra_body
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,22 +110,14 @@ class OpenAIEventHandler(AsyncEventHandler):
         self._stt_prompt = stt_prompt
         self._stt_extra_body = dict(stt_extra_body) if stt_extra_body else None
         if self._has_asr_models():
-            validate_extra_body_response_format(
-                self._stt_extra_body,
-                allowed_formats={"json"},
-                body_name="STT",
-            )
+            validate_stt_extra_body(self._stt_extra_body)
 
         self._tts_client = tts_client
         self._tts_speed = tts_speed
         self._tts_instructions = tts_instructions
         self._tts_extra_body = dict(tts_extra_body) if tts_extra_body else None
         if self._has_tts_voices():
-            validate_extra_body_response_format(
-                self._tts_extra_body,
-                allowed_formats={"pcm", "wav"},
-                body_name="TTS",
-            )
+            validate_tts_extra_body(self._tts_extra_body)
         self._tts_streaming_min_words = tts_streaming_min_words
         self._tts_streaming_max_chars = tts_streaming_max_chars
 
@@ -266,7 +258,13 @@ class OpenAIEventHandler(AsyncEventHandler):
                 return
 
             # Send to OpenAI for transcription
-            use_streaming = self._is_asr_model_streaming(self._current_asr_model.name)
+            extra_body = self._get_stt_extra_body()
+            use_streaming = get_extra_body_boolean_field(
+                extra_body,
+                field_name="stream",
+                default=self._is_asr_model_streaming(self._current_asr_model.name),
+                body_name="STT",
+            )
 
             transcription_kwargs = {
                 "file": self._wav_buffer,
@@ -277,7 +275,7 @@ class OpenAIEventHandler(AsyncEventHandler):
                 "response_format": "json",
                 "stream": use_streaming if use_streaming else omit,
             }
-            if extra_body := self._get_stt_extra_body():
+            if extra_body:
                 transcription_kwargs["extra_body"] = extra_body
 
             transcription = await self._stt_client.audio.transcriptions.create(**transcription_kwargs)

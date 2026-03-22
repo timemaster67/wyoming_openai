@@ -110,6 +110,68 @@ def validate_extra_body_response_format(
     )
 
 
+def validate_extra_body_boolean_field(
+    extra_body: dict[str, object] | None, *, field_name: str, body_name: str
+) -> None:
+    """Reject non-boolean extra_body fields that affect response parsing."""
+    if not extra_body or field_name not in extra_body:
+        return
+
+    field_value = extra_body[field_name]
+    if isinstance(field_value, bool):
+        return
+
+    raise ValueError(f"{body_name} extra_body {field_name} must be a boolean; got {field_value!r}")
+
+
+def validate_extra_body_disallowed_fields(
+    extra_body: dict[str, object] | None, *, field_names: set[str], body_name: str
+) -> None:
+    """Reject extra_body fields that would change the response transport."""
+    if not extra_body:
+        return
+
+    disallowed_fields = sorted(field_name for field_name in field_names if field_name in extra_body)
+    if not disallowed_fields:
+        return
+
+    formatted_fields = ", ".join(repr(field_name) for field_name in disallowed_fields)
+    raise ValueError(
+        f"{body_name} extra_body does not support overriding {formatted_fields}; "
+        "Wyoming expects raw audio bytes"
+    )
+
+
+def get_extra_body_boolean_field(
+    extra_body: dict[str, object] | None, *, field_name: str, default: bool, body_name: str
+) -> bool:
+    """Return a boolean override from extra_body or fall back to a default value."""
+    if not extra_body or field_name not in extra_body:
+        return default
+
+    field_value = extra_body[field_name]
+    if isinstance(field_value, bool):
+        return field_value
+
+    raise ValueError(f"{body_name} extra_body {field_name} must be a boolean; got {field_value!r}")
+
+
+def validate_stt_extra_body(extra_body: dict[str, object] | None) -> None:
+    """Validate STT extra_body fields that can affect client-side parsing."""
+    validate_extra_body_response_format(extra_body, allowed_formats={"json"}, body_name="STT")
+    validate_extra_body_boolean_field(extra_body, field_name="stream", body_name="STT")
+
+
+def validate_tts_extra_body(extra_body: dict[str, object] | None) -> None:
+    """Validate TTS extra_body fields that can affect response decoding."""
+    validate_extra_body_response_format(extra_body, allowed_formats={"pcm", "wav"}, body_name="TTS")
+    validate_extra_body_disallowed_fields(
+        extra_body,
+        field_names={"stream", "stream_format"},
+        body_name="TTS",
+    )
+
+
 class NamedBytesIO(BytesIO):
     """
     A subclass of BytesIO that adds a 'name' attribute to the file-like object.

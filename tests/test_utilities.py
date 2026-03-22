@@ -4,7 +4,14 @@ from io import BytesIO
 
 import pytest
 
-from wyoming_openai.utilities import NamedBytesIO, create_enum_parser, create_json_object_parser
+from wyoming_openai.utilities import (
+    NamedBytesIO,
+    create_enum_parser,
+    create_json_object_parser,
+    get_extra_body_boolean_field,
+    validate_stt_extra_body,
+    validate_tts_extra_body,
+)
 
 
 def test_named_bytes_io_name_property():
@@ -107,3 +114,29 @@ def test_create_json_object_parser_rejects_non_object():
         parser('["stream"]')
 
     assert "expected a JSON object" in str(exc_info.value)
+
+
+def test_validate_stt_extra_body_allows_boolean_stream_override():
+    """Test that STT extra_body accepts a boolean stream override."""
+    validate_stt_extra_body({"response_format": "json", "stream": True})
+
+
+def test_validate_stt_extra_body_rejects_non_boolean_stream_override():
+    """Test that STT extra_body rejects non-boolean stream values."""
+    with pytest.raises(ValueError, match="STT extra_body stream must be a boolean"):
+        validate_stt_extra_body({"stream": "yes"})
+
+
+def test_validate_tts_extra_body_rejects_transport_overrides():
+    """Test that TTS extra_body rejects transport-shaping fields."""
+    with pytest.raises(ValueError, match="does not support overriding 'stream', 'stream_format'"):
+        validate_tts_extra_body({"stream": True, "stream_format": "sse"})
+
+
+def test_get_extra_body_boolean_field_returns_default_or_override():
+    """Test that boolean extra_body fields fall back correctly."""
+    assert get_extra_body_boolean_field(None, field_name="stream", default=False, body_name="STT") is False
+    assert (
+        get_extra_body_boolean_field({"stream": True}, field_name="stream", default=False, body_name="STT")
+        is True
+    )
