@@ -125,7 +125,9 @@ async def main():
         default=stt_extra_body_default,
         help=(
             "Optional JSON object merged into the STT request body via extra_body; "
-            "overlapping keys override top-level request fields"
+            "overlapping keys override top-level request fields. "
+            "'response_format' must remain 'json' and 'stream' must be a boolean. "
+            "Incompatible values cause a startup error"
         ),
     )
     parser.add_argument(
@@ -180,7 +182,10 @@ async def main():
         default=tts_extra_body_default,
         help=(
             "Optional JSON object merged into the TTS request body via extra_body; "
-            "overlapping keys override top-level request fields"
+            "overlapping keys override top-level request fields. "
+            "'stream' and 'stream_format' are not allowed; "
+            "'response_format' is limited to 'pcm' or 'wav'. "
+            "Incompatible values cause a startup error"
         ),
     )
     parser.add_argument(
