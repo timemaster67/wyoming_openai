@@ -29,7 +29,7 @@ from wyoming.tts import (
 )
 
 from .compatibility import CustomAsyncOpenAI, OpenAIBackend, TtsVoiceModel
-from .utilities import NamedBytesIO
+from .utilities import NamedBytesIO, get_extra_body_boolean_field, validate_stt_extra_body, validate_tts_extra_body
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,8 +75,10 @@ class OpenAIEventHandler(AsyncEventHandler):
         tts_client: CustomAsyncOpenAI,
         stt_temperature: float | None = None,
         stt_prompt: str | None = None,
+        stt_extra_body: dict[str, object] | None = None,
         tts_speed: float | None = None,
         tts_instructions: str | None = None,
+        tts_extra_body: dict[str, object] | None = None,
         tts_streaming_min_words: int | None = None,
         tts_streaming_max_chars: int | None = None,
         **kwargs,
@@ -91,8 +93,10 @@ class OpenAIEventHandler(AsyncEventHandler):
             tts_client (CustomAsyncOpenAI): The client for text-to-speech.
             stt_temperature (float | None): The temperature for STT, or None for default.
             stt_prompt (str | None): An optional prompt for STT.
+            stt_extra_body (dict[str, object] | None): Optional JSON body fields merged into STT requests.
             tts_speed (float | None): The speed for TTS, or None for default.
             tts_instructions (str | None): Optional instructions for TTS.
+            tts_extra_body (dict[str, object] | None): Optional JSON body fields merged into TTS requests.
             tts_streaming_min_words (int | None): Minimum words per chunk for streaming TTS.
             tts_streaming_max_chars (int | None): Maximum characters per chunk for streaming TTS.
             Note: The caller owns the STT/TTS clients and is responsible for closing them.
@@ -104,10 +108,16 @@ class OpenAIEventHandler(AsyncEventHandler):
         self._stt_client = stt_client
         self._stt_temperature = stt_temperature
         self._stt_prompt = stt_prompt
+        self._stt_extra_body = dict(stt_extra_body) if stt_extra_body else None
+        if self._has_asr_models():
+            validate_stt_extra_body(self._stt_extra_body)
 
         self._tts_client = tts_client
         self._tts_speed = tts_speed
         self._tts_instructions = tts_instructions
+        self._tts_extra_body = dict(tts_extra_body) if tts_extra_body else None
+        if self._has_tts_voices():
+            validate_tts_extra_body(self._tts_extra_body)
         self._tts_streaming_min_words = tts_streaming_min_words
         self._tts_streaming_max_chars = tts_streaming_max_chars
 
@@ -248,24 +258,27 @@ class OpenAIEventHandler(AsyncEventHandler):
                 return
 
             # Send to OpenAI for transcription
-            use_streaming = self._is_asr_model_streaming(self._current_asr_model.name)
-
-            # Prepare extra_body for SPEACHES backend
-            extra_body = {}
-            if hasattr(self._stt_client, "backend") and self._stt_client.backend == OpenAIBackend.SPEACHES:
-                extra_body["vad_filter"] = False
-                _LOGGER.debug("Adding vad_filter=False for SPEACHES backend")
-
-            transcription = await self._stt_client.audio.transcriptions.create(
-                file=self._wav_buffer,
-                model=self._current_asr_model.name,
-                language=self._current_language if self._current_language is not None else omit,
-                temperature=self._stt_temperature if self._stt_temperature is not None else omit,
-                prompt=self._stt_prompt if self._stt_prompt is not None else omit,
-                response_format="json",
-                stream=use_streaming if use_streaming else omit,
-                extra_body=extra_body if extra_body else None,
+            extra_body = self._get_stt_extra_body()
+            use_streaming = get_extra_body_boolean_field(
+                extra_body,
+                field_name="stream",
+                default=self._is_asr_model_streaming(self._current_asr_model.name),
+                body_name="STT",
             )
+
+            transcription_kwargs = {
+                "file": self._wav_buffer,
+                "model": self._current_asr_model.name,
+                "language": self._current_language if self._current_language is not None else omit,
+                "temperature": self._stt_temperature if self._stt_temperature is not None else omit,
+                "prompt": self._stt_prompt if self._stt_prompt is not None else omit,
+                "response_format": "json",
+                "stream": use_streaming if use_streaming else omit,
+            }
+            if extra_body:
+                transcription_kwargs["extra_body"] = extra_body
+
+            transcription = await self._stt_client.audio.transcriptions.create(**transcription_kwargs)
 
             await self.write_event(TranscriptStart().event())
 
@@ -316,6 +329,27 @@ class OpenAIEventHandler(AsyncEventHandler):
                 if model.name == model_name or not model_name:
                     return model
         return None
+
+    def _has_asr_models(self) -> bool:
+        """Return True when STT is configured for this handler."""
+        return any(getattr(program, "models", None) for program in self._wyoming_info.asr)
+
+    def _has_tts_voices(self) -> bool:
+        """Return True when TTS is configured for this handler."""
+        return any(getattr(program, "voices", None) for program in self._wyoming_info.tts)
+
+    def _get_stt_extra_body(self) -> dict[str, object] | None:
+        """Get STT extra_body merged with backend-specific fields."""
+        extra_body = dict(self._stt_extra_body or {})
+        if hasattr(self._stt_client, "backend") and self._stt_client.backend == OpenAIBackend.SPEACHES:
+            if "vad_filter" not in extra_body:
+                extra_body["vad_filter"] = False
+                _LOGGER.debug("Adding default vad_filter=False for SPEACHES backend")
+        return extra_body or None
+
+    def _get_tts_extra_body(self) -> dict[str, object] | None:
+        """Get TTS extra_body for request construction."""
+        return dict(self._tts_extra_body) if self._tts_extra_body else None
 
     def _is_asr_model_streaming(self, model_name: str) -> bool:
         """Check if an ASR model supports streaming"""
@@ -960,19 +994,24 @@ class OpenAIEventHandler(AsyncEventHandler):
                 return TtsStreamResult(streamed=True)
 
             # Buffer audio (default behavior for parallel tasks)
-            audio_data = b""
+            chunks: list[bytes] = []
             async with self._tts_semaphore:
-                async with self._tts_client.audio.speech.with_streaming_response.create(
-                    model=voice.model_name,
-                    voice=voice.name,
-                    input=text,
-                    response_format="wav",
-                    speed=self._tts_speed if self._tts_speed is not None else omit,
-                    instructions=self._tts_instructions if self._tts_instructions is not None else omit,
-                ) as response:
-                    async for chunk in response.iter_bytes(chunk_size=TTS_CHUNK_SIZE):
-                        audio_data += chunk
+                request_kwargs = {
+                    "model": voice.model_name,
+                    "voice": voice.name,
+                    "input": text,
+                    "response_format": "wav",
+                    "speed": self._tts_speed if self._tts_speed is not None else omit,
+                    "instructions": self._tts_instructions if self._tts_instructions is not None else omit,
+                }
+                if extra_body := self._get_tts_extra_body():
+                    request_kwargs["extra_body"] = extra_body
 
+                async with self._tts_client.audio.speech.with_streaming_response.create(**request_kwargs) as response:
+                    async for chunk in response.iter_bytes(chunk_size=TTS_CHUNK_SIZE):
+                        chunks.append(chunk)
+
+            audio_data = b"".join(chunks)
             if not audio_data:
                 raise TtsStreamError("OpenAI returned empty audio response", chunk_preview, voice.name)
 
@@ -1088,14 +1127,18 @@ class OpenAIEventHandler(AsyncEventHandler):
             timestamp = start_timestamp
 
             async with self._tts_semaphore:
-                async with self._tts_client.audio.speech.with_streaming_response.create(
-                    model=voice.model_name,
-                    voice=voice.name,
-                    input=text,
-                    response_format="wav",
-                    speed=self._tts_speed if self._tts_speed is not None else omit,
-                    instructions=self._tts_instructions if self._tts_instructions is not None else omit,
-                ) as response:
+                request_kwargs = {
+                    "model": voice.model_name,
+                    "voice": voice.name,
+                    "input": text,
+                    "response_format": "wav",
+                    "speed": self._tts_speed if self._tts_speed is not None else omit,
+                    "instructions": self._tts_instructions if self._tts_instructions is not None else omit,
+                }
+                if extra_body := self._get_tts_extra_body():
+                    request_kwargs["extra_body"] = extra_body
+
+                async with self._tts_client.audio.speech.with_streaming_response.create(**request_kwargs) as response:
                     async for chunk in response.iter_bytes(chunk_size=TTS_CHUNK_SIZE):
                         if first_chunk is None:
                             # First chunk: parse WAV header and send AudioStart

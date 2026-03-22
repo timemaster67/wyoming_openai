@@ -18,7 +18,7 @@ from .compatibility import (
 )
 from .const import DEFAULT_OPENAI_BASE_URL, __version__
 from .handler import OpenAIEventHandler
-from .utilities import create_enum_parser
+from .utilities import create_enum_parser, create_json_object_parser, validate_stt_extra_body, validate_tts_extra_body
 
 
 def configure_logging(level):
@@ -35,6 +35,8 @@ async def main():
 
     # Create reusable enum parser for backend arguments
     backend_parser = create_enum_parser(OpenAIBackend)
+    stt_extra_body_parser = create_json_object_parser("STT extra body")
+    tts_extra_body_parser = create_json_object_parser("TTS extra body")
 
     stt_backend_env = os.getenv("STT_BACKEND")
     stt_backend_default = None
@@ -49,6 +51,22 @@ async def main():
     if tts_backend_env:
         try:
             tts_backend_default = backend_parser(tts_backend_env)
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
+
+    stt_extra_body_env = os.getenv("STT_EXTRA_BODY")
+    stt_extra_body_default = None
+    if stt_extra_body_env:
+        try:
+            stt_extra_body_default = stt_extra_body_parser(stt_extra_body_env)
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
+
+    tts_extra_body_env = os.getenv("TTS_EXTRA_BODY")
+    tts_extra_body_default = None
+    if tts_extra_body_env:
+        try:
+            tts_extra_body_default = tts_extra_body_parser(tts_extra_body_env)
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
 
@@ -102,6 +120,17 @@ async def main():
     )
     parser.add_argument("--stt-prompt", default=os.getenv("STT_PROMPT", None), help="Optional prompt for STT requests")
     parser.add_argument(
+        "--stt-extra-body",
+        type=stt_extra_body_parser,
+        default=stt_extra_body_default,
+        help=(
+            "Optional JSON object merged into the STT request body via extra_body; "
+            "overlapping keys override top-level request fields. "
+            "'response_format' must remain 'json' and 'stream' must be a boolean. "
+            "Incompatible values cause a startup error"
+        ),
+    )
+    parser.add_argument(
         "--stt-streaming-models",
         nargs="+",
         default=os.getenv("STT_STREAMING_MODELS", "").split(),
@@ -148,6 +177,18 @@ async def main():
         "--tts-instructions", default=os.getenv("TTS_INSTRUCTIONS", None), help="Optional instructions for TTS requests"
     )
     parser.add_argument(
+        "--tts-extra-body",
+        type=tts_extra_body_parser,
+        default=tts_extra_body_default,
+        help=(
+            "Optional JSON object merged into the TTS request body via extra_body; "
+            "overlapping keys override top-level request fields. "
+            "'stream' and 'stream_format' are not allowed; "
+            "'response_format' is limited to 'pcm' or 'wav'. "
+            "Incompatible values cause a startup error"
+        ),
+    )
+    parser.add_argument(
         "--tts-streaming-models",
         nargs="+",
         default=os.getenv("TTS_STREAMING_MODELS", "").split(),
@@ -167,6 +208,18 @@ async def main():
     )
 
     args = parser.parse_args()
+
+    stt_requested = bool(args.stt_models or args.stt_streaming_models)
+    tts_requested = bool(args.tts_models or args.tts_streaming_models)
+    tts_validation_deferred = tts_requested and not args.tts_voices
+
+    try:
+        if stt_requested:
+            validate_stt_extra_body(args.stt_extra_body)
+        if tts_requested and args.tts_voices:
+            validate_tts_extra_body(args.tts_extra_body)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     configure_logging(args.log_level)
     _logger = logging.getLogger(__name__)
@@ -216,6 +269,12 @@ async def main():
         if not asr_programs and not tts_programs:
             _logger.error("No STT or TTS models specified. Exiting.")
             return
+
+        try:
+            if tts_validation_deferred and tts_programs:
+                validate_tts_extra_body(args.tts_extra_body)
+        except ValueError as exc:
+            parser.error(str(exc))
 
         info = create_info(asr_programs, tts_programs)
 
@@ -293,6 +352,8 @@ async def main():
                 tts_speed=args.tts_speed,
                 tts_instructions=args.tts_instructions,
                 stt_prompt=args.stt_prompt,
+                stt_extra_body=args.stt_extra_body,
+                tts_extra_body=args.tts_extra_body,
                 tts_streaming_min_words=args.tts_streaming_min_words,
                 tts_streaming_max_chars=args.tts_streaming_max_chars,
             )
