@@ -994,7 +994,7 @@ class OpenAIEventHandler(AsyncEventHandler):
                 return TtsStreamResult(streamed=True)
 
             # Buffer audio (default behavior for parallel tasks)
-            audio_data = b""
+            chunks: list[bytes] = []
             async with self._tts_semaphore:
                 request_kwargs = {
                     "model": voice.model_name,
@@ -1009,8 +1009,9 @@ class OpenAIEventHandler(AsyncEventHandler):
 
                 async with self._tts_client.audio.speech.with_streaming_response.create(**request_kwargs) as response:
                     async for chunk in response.iter_bytes(chunk_size=TTS_CHUNK_SIZE):
-                        audio_data += chunk
+                        chunks.append(chunk)
 
+            audio_data = b"".join(chunks)
             if not audio_data:
                 raise TtsStreamError("OpenAI returned empty audio response", chunk_preview, voice.name)
 
