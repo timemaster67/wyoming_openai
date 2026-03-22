@@ -92,6 +92,7 @@ The server accepts both command-line arguments and environment variables. Key co
 - Model lists for STT and TTS
 - Voice configurations
 - Backend-specific settings (temperature, speed, etc.)
+- STT/TTS extra request body fields (`--stt-extra-body` / `--tts-extra-body`)
 
 ## Testing Strategy
 
@@ -99,4 +100,5 @@ Tests are organized by module:
 - `test_handler.py`: Event handler logic
 - `test_compatibility.py`: Backend compatibility
 - `test_utilities.py`: Helper functions
+- `test_main.py`: CLI argument parsing and startup validation
 - `test_integration.py`: End-to-end scenarios
