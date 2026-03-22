@@ -134,6 +134,72 @@ async def test_main_rejects_tts_transport_override_before_server_start(monkeypat
     assert "TTS extra_body does not support overriding 'stream'" in capsys.readouterr().err
 
 
+@pytest.mark.asyncio
+async def test_main_validates_tts_extra_body_before_client_creation(monkeypatch, capsys):
+    def unexpected_factory():
+        async def should_not_be_called(*args, **kwargs):
+            raise AssertionError("client factory should not be created for invalid extra_body")
+
+        return should_not_be_called
+
+    monkeypatch.setattr(
+        main_module.CustomAsyncOpenAI,
+        "create_autodetected_factory",
+        staticmethod(unexpected_factory),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming_openai",
+            "--tts-models",
+            "tts-1",
+            "--tts-voices",
+            "alloy",
+            "--tts-extra-body",
+            '{"stream":true}',
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main()
+
+    assert exc_info.value.code == 2
+    assert "TTS extra_body does not support overriding 'stream'" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_main_allows_invalid_unused_tts_extra_body_when_voice_discovery_returns_none(monkeypatch):
+    async def fake_factory(*args, **kwargs):
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        main_module.CustomAsyncOpenAI,
+        "create_autodetected_factory",
+        staticmethod(lambda: fake_factory),
+    )
+    monkeypatch.setattr(
+        main_module.AsyncServer,
+        "from_uri",
+        staticmethod(lambda uri: _CapturingServer()),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming_openai",
+            "--stt-models",
+            "whisper-1",
+            "--tts-models",
+            "tts-1",
+            "--tts-extra-body",
+            '{"stream":true}',
+        ],
+    )
+
+    await main()
+
+
 class _FakeClient:
     def __init__(self):
         self.backend = None

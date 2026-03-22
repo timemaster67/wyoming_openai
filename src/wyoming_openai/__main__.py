@@ -204,6 +204,18 @@ async def main():
 
     args = parser.parse_args()
 
+    stt_requested = bool(args.stt_models or args.stt_streaming_models)
+    tts_requested = bool(args.tts_models or args.tts_streaming_models)
+    tts_validation_deferred = tts_requested and not args.tts_voices
+
+    try:
+        if stt_requested:
+            validate_stt_extra_body(args.stt_extra_body)
+        if tts_requested and args.tts_voices:
+            validate_tts_extra_body(args.tts_extra_body)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     configure_logging(args.log_level)
     _logger = logging.getLogger(__name__)
 
@@ -253,15 +265,13 @@ async def main():
             _logger.error("No STT or TTS models specified. Exiting.")
             return
 
-        info = create_info(asr_programs, tts_programs)
-
         try:
-            if asr_programs:
-                validate_stt_extra_body(args.stt_extra_body)
-            if tts_programs:
+            if tts_validation_deferred and tts_programs:
                 validate_tts_extra_body(args.tts_extra_body)
         except ValueError as exc:
             parser.error(str(exc))
+
+        info = create_info(asr_programs, tts_programs)
 
         # Log the model configurations
         if asr_programs:
