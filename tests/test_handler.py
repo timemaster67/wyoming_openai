@@ -1087,7 +1087,7 @@ class TestOpenAIEventHandlerComprehensive:
             languages=["en"],
             version=None,
         )
-        setattr(legacy_voice, "model_name", "tts-1")
+        legacy_voice.model_name = "tts-1"  # type: ignore[reportAttributeAccessIssue]
         mock_info.tts[0].voices = [legacy_voice]
 
         wav_buffer = io.BytesIO()
