@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from enum import Enum
 from urllib.parse import urlparse
 
@@ -23,6 +24,7 @@ class TtsVoiceModel(TtsVoice):
 
     Attributes:
         model_name (str): The name of the underlying text-to-speech model.
+        backend_voice_name (str): The raw voice identifier expected by the backend.
     """
 
     def __init__(self, model_name: str, *args, **kwargs):
@@ -34,8 +36,67 @@ class TtsVoiceModel(TtsVoice):
             *args: Variable length argument list for superclass initialization.
             **kwargs: Arbitrary keyword arguments for superclass initialization.
         """
+        backend_voice_name = kwargs.pop("backend_voice_name", None)
         super().__init__(*args, **kwargs)
         self.model_name = model_name
+        self.backend_voice_name = self.name if backend_voice_name is None else backend_voice_name
+
+
+def _get_ordered_unique_models(models: list[str], streaming_models: list[str]) -> list[str]:
+    """Return streaming-first model names while preserving input order."""
+    seen = set()
+    ordered_models = []
+
+    for model_name in streaming_models:
+        if model_name not in seen:
+            ordered_models.append(model_name)
+            seen.add(model_name)
+
+    for model_name in models:
+        if model_name not in seen:
+            ordered_models.append(model_name)
+            seen.add(model_name)
+
+    return ordered_models
+
+
+def _create_tts_voice_models(
+    model_voice_pairs: list[tuple[str, str]],
+    tts_url: str,
+    languages: list[str],
+) -> list[TtsVoiceModel]:
+    """Create Wyoming TTS voice models with collision-aware public names."""
+    if not model_voice_pairs:
+        return []
+
+    raw_name_counts = Counter(raw_voice_name for _, raw_voice_name in model_voice_pairs)
+    base_public_names = [
+        raw_voice_name if raw_name_counts[raw_voice_name] == 1 else f"{raw_voice_name} ({model_name})"
+        for model_name, raw_voice_name in model_voice_pairs
+    ]
+    public_name_counts = Counter(base_public_names)
+    duplicate_public_name_counts: Counter[str] = Counter()
+
+    voices = []
+    for (model_name, raw_voice_name), public_name in zip(model_voice_pairs, base_public_names, strict=False):
+        if public_name_counts[public_name] > 1:
+            duplicate_public_name_counts[public_name] += 1
+            public_name = f"{public_name} [{duplicate_public_name_counts[public_name]}]"
+
+        voices.append(
+            TtsVoiceModel(
+                name=public_name,
+                description=f"{raw_voice_name} ({model_name})",
+                model_name=model_name,
+                backend_voice_name=raw_voice_name,
+                attribution=Attribution(name=ATTRIBUTION_NAME_MODEL, url=tts_url),
+                installed=True,
+                languages=languages,
+                version=None,
+            )
+        )
+
+    return voices
 
 
 def create_asr_programs(
@@ -142,38 +203,9 @@ def create_tts_voices(
     Returns:
         list[TtsVoiceModel]: A list of Wyoming TtsVoiceModel instances.
     """
-    # Create ordered list: streaming models first, then non-streaming, preserving natural order and deduplicating
-    # (same pattern as create_asr_programs)
-    seen = set()
-    ordered_models = []
-
-    # Add streaming models first
-    for model_name in tts_streaming_models:
-        if model_name not in seen:
-            ordered_models.append(model_name)
-            seen.add(model_name)
-
-    # Add non-streaming models
-    for model_name in tts_models:
-        if model_name not in seen:
-            ordered_models.append(model_name)
-            seen.add(model_name)
-
-    voices = []
-    for model_name in ordered_models:
-        for voice in tts_voices:
-            voices.append(
-                TtsVoiceModel(
-                    name=voice,
-                    description=f"{voice} ({model_name})",
-                    model_name=model_name,
-                    attribution=Attribution(name=ATTRIBUTION_NAME_MODEL, url=tts_url),
-                    installed=True,
-                    languages=languages,
-                    version=None,
-                )
-            )
-    return voices
+    ordered_models = _get_ordered_unique_models(tts_models, tts_streaming_models)
+    model_voice_pairs = [(model_name, voice_name) for model_name in ordered_models for voice_name in tts_voices]
+    return _create_tts_voice_models(model_voice_pairs, tts_url, languages)
 
 
 def create_tts_programs(
@@ -486,23 +518,9 @@ class CustomAsyncOpenAI(AsyncOpenAI):
         Uses streaming models if regular models not specified.
         Note: this is not the list of CONFIGURED voices.
         """
-        # Use the same fallback pattern as create_asr_programs
-        seen = set()
-        ordered_models = []
+        ordered_models = _get_ordered_unique_models(model_names, streaming_model_names)
 
-        # Add streaming models first
-        for model_name in streaming_model_names:
-            if model_name not in seen:
-                ordered_models.append(model_name)
-                seen.add(model_name)
-
-        # Add non-streaming models
-        for model_name in model_names:
-            if model_name not in seen:
-                ordered_models.append(model_name)
-                seen.add(model_name)
-
-        tts_voice_models = []
+        model_voice_pairs: list[tuple[str, str]] = []
         for model_name in ordered_models:
             if self.backend == OpenAIBackend.OPENAI:
                 tts_voices = await self.list_openai_voices()
@@ -516,17 +534,9 @@ class CustomAsyncOpenAI(AsyncOpenAI):
                 _LOGGER.warning("Unknown backend: %s", self.backend)
                 continue
 
-            # Create TTS voices in Wyoming Protocol format, preserving streaming model info
-            tts_voice_models.extend(
-                create_tts_voices(
-                    tts_models=[model_name],
-                    tts_streaming_models=streaming_model_names,
-                    tts_voices=tts_voices,
-                    tts_url=str(self.base_url),
-                    languages=languages,
-                )
-            )
-        return tts_voice_models
+            model_voice_pairs.extend((model_name, voice_name) for voice_name in tts_voices)
+
+        return _create_tts_voice_models(model_voice_pairs, str(self.base_url), languages)
 
     _OPENAI_HOSTNAME = urlparse(DEFAULT_OPENAI_BASE_URL).hostname
 

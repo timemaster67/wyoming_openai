@@ -367,6 +367,12 @@ class OpenAIEventHandler(AsyncEventHandler):
                     return getattr(program, "supports_synthesize_streaming", False)
         return False
 
+    def _iter_tts_voices(self):
+        """Iterate over configured TTS voices."""
+        for program in self._wyoming_info.tts:
+            for voice in program.voices:
+                yield cast(TtsVoiceModel, voice)
+
     def _get_pysbd_language(self, language: str | None) -> str:
         """
         Get pysbd-compatible language code.
@@ -626,11 +632,22 @@ class OpenAIEventHandler(AsyncEventHandler):
 
     def _get_voice(self, name: str | None = None) -> TtsVoiceModel | None:
         """Get a TTS voice by name or None"""
-        for program in self._wyoming_info.tts:
-            for voice in program.voices:
-                if not name or voice.name == name:
-                    return cast(TtsVoiceModel, voice)
+        for voice in self._iter_tts_voices():
+            if not name or voice.name == name:
+                return voice
         return None
+
+    def _get_voices_by_backend_name(self, backend_voice_name: str) -> list[TtsVoiceModel]:
+        """Get TTS voices by the raw backend voice identifier."""
+        return [
+            voice
+            for voice in self._iter_tts_voices()
+            if getattr(voice, "backend_voice_name", voice.name) == backend_voice_name
+        ]
+
+    def _get_backend_voice_name(self, voice: TtsVoice) -> str:
+        """Get the raw backend voice identifier for synthesis requests."""
+        return getattr(voice, "backend_voice_name", voice.name)
 
     def _is_tts_language_supported(self, language: str, voice: TtsVoice) -> bool:
         """Check if a language is supported by a TTS voice"""
@@ -649,16 +666,39 @@ class OpenAIEventHandler(AsyncEventHandler):
         Returns:
             TtsVoiceModel | None: The validated voice, or None if validation failed.
         """
-        # Get voice
         voice = self._get_voice(requested_voice)
-        if not voice:
+        if voice:
+            if not self._validate_tts_language(requested_language, voice):
+                return None
+            return voice
+
+        if not requested_voice:
             self._log_unsupported_voice(requested_voice)
             return None
 
-        # Validate language
-        if not self._validate_tts_language(requested_language, voice):
+        backend_matches = self._get_voices_by_backend_name(requested_voice)
+        if not backend_matches:
+            self._log_unsupported_voice(requested_voice)
             return None
 
+        if len(backend_matches) == 1:
+            voice = backend_matches[0]
+            if not self._validate_tts_language(requested_language, voice):
+                return None
+            return voice
+
+        compatible_matches = backend_matches
+        if requested_language:
+            language_matches = [
+                voice for voice in backend_matches if self._is_tts_language_supported(requested_language, voice)
+            ]
+            if language_matches:
+                compatible_matches = language_matches
+
+        voice = compatible_matches[0]
+        self._log_legacy_voice_fallback(requested_voice, voice, backend_matches)
+        if not self._validate_tts_language(requested_language, voice):
+            return None
         return voice
 
     def _validate_tts_language(self, language: str | None, voice: TtsVoice) -> bool:
@@ -680,6 +720,19 @@ class OpenAIEventHandler(AsyncEventHandler):
             _LOGGER.error(f"Voice {requested_voice} is not supported. Available voices: {available}")
         else:
             _LOGGER.error("No TTS voices specified")
+
+    def _log_legacy_voice_fallback(
+        self, requested_voice: str, selected_voice: TtsVoiceModel, matches: list[TtsVoiceModel]
+    ) -> None:
+        """Log when a legacy raw voice name falls back to a configured voice."""
+        available = [voice.name for voice in matches]
+        _LOGGER.warning(
+            "Voice %s matched multiple configured voices. Falling back to %s for backward compatibility. "
+            "Update the client to use one of: %s",
+            requested_voice,
+            selected_voice.name,
+            available,
+        )
 
     async def _handle_synthesize(self, synthesize: Synthesize) -> bool:
         """Handle text-to-speech synthesis request"""
@@ -998,7 +1051,7 @@ class OpenAIEventHandler(AsyncEventHandler):
             async with self._tts_semaphore:
                 request_kwargs = {
                     "model": voice.model_name,
-                    "voice": voice.name,
+                    "voice": self._get_backend_voice_name(voice),
                     "input": text,
                     "response_format": "wav",
                     "speed": self._tts_speed if self._tts_speed is not None else omit,
@@ -1129,7 +1182,7 @@ class OpenAIEventHandler(AsyncEventHandler):
             async with self._tts_semaphore:
                 request_kwargs = {
                     "model": voice.model_name,
-                    "voice": voice.name,
+                    "voice": self._get_backend_voice_name(voice),
                     "input": text,
                     "response_format": "wav",
                     "speed": self._tts_speed if self._tts_speed is not None else omit,
