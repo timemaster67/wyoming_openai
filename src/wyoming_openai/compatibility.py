@@ -86,7 +86,7 @@ def _create_tts_voice_models(
         voices.append(
             TtsVoiceModel(
                 name=public_name,
-                description=f"{raw_voice_name} ({model_name})",
+                description=public_name,
                 model_name=model_name,
                 backend_voice_name=raw_voice_name,
                 attribution=Attribution(name=ATTRIBUTION_NAME_MODEL, url=tts_url),
