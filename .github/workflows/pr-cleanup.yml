@@ -16,7 +16,7 @@ jobs:
 
     steps:
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
@@ -34,7 +34,7 @@ jobs:
         echo "Attempting to delete tag: ${TAG_NAME} for package: ${PACKAGE_NAME}"
 
         # Determine the correct API base path based on repository owner type
-        OWNER_TYPE="${{ github.repository_owner_type }}"
+        OWNER_TYPE="${{ github.event.repository.owner.type }}"
         OWNER="${{ github.repository_owner }}"
         if [ "$OWNER_TYPE" = "Organization" ]; then
           API_BASE="orgs/${OWNER}"
