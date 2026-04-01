@@ -28,3 +28,7 @@ jobs:
       - name: Lint with Ruff
         run: |
           ruff check .
+
+      - name: Type check with Pyright
+        run: |
+          pyright
