@@ -7,6 +7,7 @@ import pytest
 from openai import omit
 from wyoming.asr import Transcript
 from wyoming.event import Event
+from wyoming.info import Attribution, TtsVoice
 from wyoming.tts import SynthesizeChunk, SynthesizeStart, SynthesizeVoice
 
 from wyoming_openai.compatibility import OpenAIBackend
@@ -28,6 +29,7 @@ def dummy_info():
             self.name = name
             self.languages = languages or ["en"]
             self.model_name = model_name or name
+            self.backend_voice_name = name
 
     class DummyProgram:
         def __init__(self, models=None, voices=None, supports_transcript_streaming=False):
@@ -485,6 +487,7 @@ def mock_info():
     tts_voice.description = "Alloy voice"
     tts_voice.languages = ["en"]
     tts_voice.model_name = "tts-1"
+    tts_voice.backend_voice_name = "alloy"
 
     # Mock TTS program
     tts_program = Mock()
@@ -1011,6 +1014,169 @@ class TestOpenAIEventHandlerComprehensive:
         assert call_args["extra_body"] == {"response_format": "pcm"}
 
     @pytest.mark.asyncio
+    async def test_handle_synthesize_uses_backend_voice_name_for_conflicts(
+        self, enhanced_handler, mock_clients, mock_info
+    ):
+        """Test synthesis uses the backend voice token when public names are model-specific."""
+        _, tts_client = mock_clients
+
+        conflicting_voice = Mock()
+        conflicting_voice.name = "alloy (tts-1)"
+        conflicting_voice.backend_voice_name = "alloy"
+        conflicting_voice.description = "alloy (tts-1)"
+        conflicting_voice.languages = ["en"]
+        conflicting_voice.model_name = "tts-1"
+        mock_info.tts[0].voices = [conflicting_voice]
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01" * 1000)
+        wav_buffer.seek(0)
+        mock_audio_data = wav_buffer.read()
+
+        class MockAsyncIterator:
+            def __init__(self, data):
+                self.data = data
+                self.chunks = [data[i : i + 2048] for i in range(0, len(data), 2048)]
+                self.index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.chunks):
+                    raise StopAsyncIteration
+                chunk = self.chunks[self.index]
+                self.index += 1
+                return chunk
+
+        mock_response = Mock()
+        mock_response.iter_bytes = Mock(return_value=MockAsyncIterator(mock_audio_data))
+
+        mock_stream_response = AsyncMock()
+        mock_stream_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_response.__aexit__ = AsyncMock(return_value=None)
+
+        tts_client.audio.speech.with_streaming_response.create = Mock(return_value=mock_stream_response)
+
+        event = Event(
+            type="synthesize",
+            data={"text": "Hello world", "voice": {"name": "alloy (tts-1)"}, "raw_text": "Hello world"},
+        )
+
+        assert await enhanced_handler.handle_event(event) is True
+
+        call_args = tts_client.audio.speech.with_streaming_response.create.call_args.kwargs
+        assert call_args["voice"] == "alloy"
+
+    @pytest.mark.asyncio
+    async def test_handle_synthesize_falls_back_to_voice_name_when_backend_voice_name_missing(
+        self, enhanced_handler, mock_clients, mock_info
+    ):
+        """Test synthesis remains compatible with plain Wyoming TtsVoice objects."""
+        _, tts_client = mock_clients
+
+        legacy_voice = TtsVoice(
+            name="legacy-voice",
+            description="Legacy voice",
+            attribution=Attribution(name="Test", url="https://example.com"),
+            installed=True,
+            languages=["en"],
+            version=None,
+        )
+        legacy_voice.model_name = "tts-1"  # type: ignore[reportAttributeAccessIssue]
+        mock_info.tts[0].voices = [legacy_voice]
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01" * 1000)
+        wav_buffer.seek(0)
+        mock_audio_data = wav_buffer.read()
+
+        class MockAsyncIterator:
+            def __init__(self, data):
+                self.data = data
+                self.chunks = [data[i : i + 2048] for i in range(0, len(data), 2048)]
+                self.index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.chunks):
+                    raise StopAsyncIteration
+                chunk = self.chunks[self.index]
+                self.index += 1
+                return chunk
+
+        mock_response = Mock()
+        mock_response.iter_bytes = Mock(return_value=MockAsyncIterator(mock_audio_data))
+
+        mock_stream_response = AsyncMock()
+        mock_stream_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_response.__aexit__ = AsyncMock(return_value=None)
+
+        tts_client.audio.speech.with_streaming_response.create = Mock(return_value=mock_stream_response)
+
+        event = Event(
+            type="synthesize",
+            data={"text": "Hello world", "voice": {"name": "legacy-voice"}, "raw_text": "Hello world"},
+        )
+
+        assert await enhanced_handler.handle_event(event) is True
+
+        call_args = tts_client.audio.speech.with_streaming_response.create.call_args.kwargs
+        assert call_args["voice"] == "legacy-voice"
+
+    def test_validate_tts_voice_and_language_falls_back_for_legacy_backend_voice(self, enhanced_handler, mock_info):
+        """Test ambiguous raw backend voice names fall back to the first configured choice."""
+        voice_a = Mock()
+        voice_a.name = "glados (model-a)"
+        voice_a.backend_voice_name = "glados"
+        voice_a.languages = ["en"]
+        voice_a.model_name = "model-a"
+
+        voice_b = Mock()
+        voice_b.name = "glados (model-b)"
+        voice_b.backend_voice_name = "glados"
+        voice_b.languages = ["en"]
+        voice_b.model_name = "model-b"
+
+        mock_info.tts[0].voices = [voice_a, voice_b]
+
+        selected_voice = enhanced_handler._validate_tts_voice_and_language("glados", None)
+
+        assert selected_voice is voice_a
+
+    def test_validate_tts_voice_and_language_prefers_language_compatible_legacy_voice(
+        self, enhanced_handler, mock_info
+    ):
+        """Test ambiguous raw backend voice names prefer a language-compatible match before falling back."""
+        voice_a = Mock()
+        voice_a.name = "glados (model-a)"
+        voice_a.backend_voice_name = "glados"
+        voice_a.languages = ["en"]
+        voice_a.model_name = "model-a"
+
+        voice_b = Mock()
+        voice_b.name = "glados (model-b)"
+        voice_b.backend_voice_name = "glados"
+        voice_b.languages = ["fr"]
+        voice_b.model_name = "model-b"
+
+        mock_info.tts[0].voices = [voice_a, voice_b]
+
+        selected_voice = enhanced_handler._validate_tts_voice_and_language("glados", "fr")
+
+        assert selected_voice is voice_b
+
+    @pytest.mark.asyncio
     async def test_handle_transcribe_with_streaming(self, enhanced_handler, mock_clients, mock_info):
         """Test handling of Transcribe event with streaming model."""
         stt_client, _ = mock_clients
@@ -1178,6 +1344,7 @@ class TestOpenAIEventHandlerComprehensive:
         voice = enhanced_handler._get_voice("alloy")
         assert voice is not None
         assert voice.name == "alloy"
+        assert voice.backend_voice_name == "alloy"
 
         # Test invalid voice
         invalid_voice = enhanced_handler._get_voice("invalid")

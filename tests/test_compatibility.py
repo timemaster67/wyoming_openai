@@ -32,6 +32,40 @@ def test_tts_voice_model_inherits_ttsvoice():
     )
     assert isinstance(v, TtsVoice)
     assert v.model_name == "model-x"
+    assert v.backend_voice_name == "voice1"
+
+
+def test_tts_voice_model_positional_args_default_backend_voice_name():
+    v = TtsVoiceModel(
+        "model-x",
+        "voice1",
+        Attribution(name="n", url="u"),
+        True,
+        "desc",
+        "1.0",
+        ["en"],
+    )
+
+    assert isinstance(v, TtsVoice)
+    assert v.name == "voice1"
+    assert v.model_name == "model-x"
+    assert v.backend_voice_name == "voice1"
+
+
+def test_tts_voice_model_positional_args_preserve_explicit_backend_voice_name():
+    v = TtsVoiceModel(
+        "model-x",
+        "public-voice",
+        Attribution(name="n", url="u"),
+        True,
+        "desc",
+        "1.0",
+        ["en"],
+        backend_voice_name="backend-voice",
+    )
+
+    assert v.name == "public-voice"
+    assert v.backend_voice_name == "backend-voice"
 
 
 def test_create_asr_programs():
@@ -203,9 +237,9 @@ class TestCustomAsyncOpenAI:
         # Should return default OpenAI voices
         assert len(voices) == 18  # 9 voices * 2 models
         assert all(isinstance(v, TtsVoiceModel) for v in voices)
-        assert all(
-            v.name in ["alloy", "ash", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer"] for v in voices
-        )
+        alloy_voices = [v for v in voices if v.backend_voice_name == "alloy"]
+        assert len(alloy_voices) == 2
+        assert {v.name for v in alloy_voices} == {"alloy (tts-1)", "alloy (tts-1-hd)"}
 
     @pytest.mark.asyncio
     async def test_list_supported_voices_speaches(self):
@@ -324,9 +358,35 @@ class TestHelperFunctions:
 
         # Check first voice
         first_voice = result[0]
-        assert first_voice.name == "alloy"
+        assert first_voice.name == "alloy (tts-1)"
         assert first_voice.model_name == "tts-1"
+        assert first_voice.backend_voice_name == "alloy"
         assert first_voice.languages == ["en", "fr"]
+
+    def test_create_tts_voices_renames_conflicts_with_model_names(self):
+        """Test that multi-model collisions use model-specific public names."""
+        result = create_tts_voices(
+            ["model-a", "model-b"],
+            [],
+            ["shared", "echo"],
+            "https://api.openai.com",
+            ["en"],
+        )
+
+        assert [voice.name for voice in result] == [
+            "shared (model-a)",
+            "echo (model-a)",
+            "shared (model-b)",
+            "echo (model-b)",
+        ]
+        assert [voice.backend_voice_name for voice in result] == ["shared", "echo", "shared", "echo"]
+
+    def test_create_tts_voices_keeps_unique_names_when_single_model(self):
+        """Test that non-conflicting single-model voice names are unchanged."""
+        result = create_tts_voices(["tts-1"], [], ["alloy", "echo"], "https://api.openai.com", ["en"])
+
+        assert [voice.name for voice in result] == ["alloy", "echo"]
+        assert [voice.backend_voice_name for voice in result] == ["alloy", "echo"]
 
     def test_create_tts_programs_detailed(self):
         """Test creating TTS programs with actual voice models."""
