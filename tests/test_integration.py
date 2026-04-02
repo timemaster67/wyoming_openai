@@ -326,9 +326,18 @@ class TestIntegration:
         # Verify all voices have correct attributes
         for voice in tts_program.voices:
             assert isinstance(voice, TtsVoiceModel)
-            assert voice.name in tts_voices
+            assert voice.backend_voice_name in tts_voices
             assert voice.model_name in tts_models
             assert voice.languages == languages
+
+        assert {voice.name for voice in tts_program.voices} == {
+            "alloy (tts-1)",
+            "echo (tts-1)",
+            "fable (tts-1)",
+            "alloy (tts-1-hd)",
+            "echo (tts-1-hd)",
+            "fable (tts-1-hd)",
+        }
 
     @pytest.mark.asyncio
     async def test_error_handling_integration(self):
