@@ -1,9 +1,13 @@
+# syntax=docker/dockerfile:1
+
 # Use an official Python runtime as a parent image
 FROM python:3.12-slim
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
 
 # No system dependencies needed - all Python packages have pre-compiled wheels
 # Uncomment the following lines if you need to install system dependencies
@@ -23,9 +27,9 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 
-# Install python dependencies and the project itself using pyproject.toml
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir .
+# Use BuildKit cache mounts so repeated builds can reuse pip downloads.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install .
 
 # Expose the application port
 EXPOSE 10300

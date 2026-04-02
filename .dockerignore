@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+build/
+htmlcov/
+src/wyoming_openai.egg-info/
+tests/
+venv/
+*.pyc
+.coverage
