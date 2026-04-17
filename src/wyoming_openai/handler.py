@@ -1127,9 +1127,13 @@ class OpenAIEventHandler(AsyncEventHandler):
                         timestamp=int(timestamp),
                     ).event()
                 )
-                # Calculate timestamp increment based on actual audio data length
-                actual_samples = len(audio_data) // audio_width
-                timestamp += (actual_samples / audio_rate) * 1000
+                timestamp = self._advance_audio_timestamp(
+                    timestamp,
+                    audio_data=audio_data,
+                    audio_rate=audio_rate,
+                    audio_width=audio_width,
+                    audio_channels=audio_channels,
+                )
 
             return timestamp
 
@@ -1234,15 +1238,36 @@ class OpenAIEventHandler(AsyncEventHandler):
                                     timestamp=int(timestamp),
                                 ).event()
                             )
-                            # Calculate timestamp increment based on actual audio data length
-                            actual_samples = len(audio_data) // audio_width
-                            timestamp += (actual_samples / audio_rate) * 1000
+                            timestamp = self._advance_audio_timestamp(
+                                timestamp,
+                                audio_data=audio_data,
+                                audio_rate=audio_rate,
+                                audio_width=audio_width,
+                                audio_channels=audio_channels,
+                            )
 
             return timestamp
 
         except Exception as e:
             _LOGGER.exception("Error streaming TTS audio: %s", e)
             return None
+
+    def _advance_audio_timestamp(
+        self,
+        timestamp: float,
+        *,
+        audio_data: bytes,
+        audio_rate: int,
+        audio_width: int,
+        audio_channels: int,
+    ) -> float:
+        """Advance a Wyoming audio timestamp using PCM frame count."""
+        frame_size = audio_width * audio_channels
+        if frame_size <= 0:
+            return timestamp
+
+        actual_frames = len(audio_data) // frame_size
+        return timestamp + (actual_frames / audio_rate) * 1000
 
     def _parse_wav_header(self, wav_data: bytes) -> tuple[int, int, int, int] | None:
         """
