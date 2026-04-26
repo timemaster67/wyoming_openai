@@ -47,6 +47,7 @@ DEFAULT_ASR_AUDIO_RATE = 16000  # Hz (Wyoming default)
 TTS_AUDIO_RATE = 24000  # Hz (OpenAI spec, fallback)
 TTS_CHUNK_SIZE = 2048  # Magical guess - but must be larger than 44 bytes for a potential WAV header
 TTS_CONCURRENT_REQUESTS = 3  # Number of concurrent OpenAI TTS requests when streaming sentences
+TTS_WAV_HEADER_MAX_BYTES = 65536  # Bound header buffering if a backend never yields a complete WAV header
 
 
 @dataclass(frozen=True)
@@ -71,8 +72,8 @@ class OpenAIEventHandler(AsyncEventHandler):
         self,
         *args,
         info: Info,
-        stt_client: CustomAsyncOpenAI,
-        tts_client: CustomAsyncOpenAI,
+        stt_client: CustomAsyncOpenAI | None,
+        tts_client: CustomAsyncOpenAI | None,
         stt_temperature: float | None = None,
         stt_prompt: str | None = None,
         stt_extra_body: dict[str, object] | None = None,
@@ -89,8 +90,8 @@ class OpenAIEventHandler(AsyncEventHandler):
         Args:
             *args: Variable length argument list for the superclass.
             info (Info): The Wyoming info object.
-            stt_client (CustomAsyncOpenAI): The client for speech-to-text.
-            tts_client (CustomAsyncOpenAI): The client for text-to-speech.
+            stt_client (CustomAsyncOpenAI | None): The client for speech-to-text.
+            tts_client (CustomAsyncOpenAI | None): The client for text-to-speech.
             stt_temperature (float | None): The temperature for STT, or None for default.
             stt_prompt (str | None): An optional prompt for STT.
             stt_extra_body (dict[str, object] | None): Optional JSON body fields merged into STT requests.
@@ -257,6 +258,10 @@ class OpenAIEventHandler(AsyncEventHandler):
                 _LOGGER.warning("No ASR model set for transcription")
                 return
 
+            if self._stt_client is None:
+                _LOGGER.error("No STT client configured for transcription")
+                return
+
             # Send to OpenAI for transcription
             extra_body = self._get_stt_extra_body()
             use_streaming = get_extra_body_boolean_field(
@@ -341,7 +346,7 @@ class OpenAIEventHandler(AsyncEventHandler):
     def _get_stt_extra_body(self) -> dict[str, object] | None:
         """Get STT extra_body merged with backend-specific fields."""
         extra_body = dict(self._stt_extra_body or {})
-        if hasattr(self._stt_client, "backend") and self._stt_client.backend == OpenAIBackend.SPEACHES:
+        if self._stt_client is not None and self._stt_client.backend == OpenAIBackend.SPEACHES:
             if "vad_filter" not in extra_body:
                 extra_body["vad_filter"] = False
                 _LOGGER.debug("Adding default vad_filter=False for SPEACHES backend")
@@ -350,6 +355,17 @@ class OpenAIEventHandler(AsyncEventHandler):
     def _get_tts_extra_body(self) -> dict[str, object] | None:
         """Get TTS extra_body for request construction."""
         return dict(self._tts_extra_body) if self._tts_extra_body else None
+
+    def _get_tts_response_format(self) -> str:
+        """Get the effective TTS response format expected from the backend."""
+        if not self._tts_extra_body:
+            return "wav"
+
+        response_format = self._tts_extra_body.get("response_format")
+        if isinstance(response_format, str):
+            return response_format
+
+        return "wav"
 
     def _is_asr_model_streaming(self, model_name: str) -> bool:
         """Check if an ASR model supports streaming"""
@@ -1037,6 +1053,9 @@ class OpenAIEventHandler(AsyncEventHandler):
             # Check if this task is allowed to stream directly
             should_stream = task_id is not None and task_id == self._allow_streaming_task_id
 
+            if self._tts_client is None:
+                raise TtsStreamError("TTS client is not configured", chunk_preview, voice.name)
+
             if should_stream:
                 # Stream directly to Wyoming (no buffering) - minimal latency
                 _LOGGER.debug("Streaming chunk directly (task %s): %s", task_id, chunk_preview)
@@ -1177,11 +1196,16 @@ class OpenAIEventHandler(AsyncEventHandler):
             float | None: Final timestamp after streaming, or None on error.
         """
         try:
-            first_chunk = None
             audio_rate = TTS_AUDIO_RATE
             audio_width = DEFAULT_AUDIO_WIDTH
             audio_channels = DEFAULT_AUDIO_CHANNELS
             timestamp = start_timestamp
+            awaiting_wav_header = self._get_tts_response_format() == "wav"
+            pending_header = b""
+
+            if self._tts_client is None:
+                _LOGGER.error("No TTS client configured for synthesis")
+                return None
 
             async with self._tts_semaphore:
                 request_kwargs = {
@@ -1197,15 +1221,14 @@ class OpenAIEventHandler(AsyncEventHandler):
 
                 async with self._tts_client.audio.speech.with_streaming_response.create(**request_kwargs) as response:
                     async for chunk in response.iter_bytes(chunk_size=TTS_CHUNK_SIZE):
-                        if first_chunk is None:
-                            # First chunk: parse WAV header and send AudioStart
-                            first_chunk = chunk
-
-                            # Try to parse WAV header from first chunk
-                            wav_params = self._parse_wav_header(chunk)
+                        if awaiting_wav_header:
+                            pending_header += chunk
+                            wav_params = self._parse_wav_header(pending_header)
                             if wav_params:
                                 audio_rate, audio_channels, audio_width, data_offset = wav_params
-                                audio_data = chunk[data_offset:]
+                                audio_data = pending_header[data_offset:]
+                                pending_header = b""
+                                awaiting_wav_header = False
                                 _LOGGER.debug(
                                     "Detected audio format: %d Hz, %d channels, %d bytes/sample, header offset: %d",
                                     audio_rate,
@@ -1213,21 +1236,26 @@ class OpenAIEventHandler(AsyncEventHandler):
                                     audio_width,
                                     data_offset,
                                 )
+                            elif len(pending_header) <= TTS_WAV_HEADER_MAX_BYTES:
+                                continue
                             else:
-                                _LOGGER.debug("Could not parse WAV header, using defaults: %d Hz", TTS_AUDIO_RATE)
-                                audio_data = chunk
-
-                            # Send audio start only once
-                            if send_audio_start:
-                                await self.write_event(
-                                    AudioStart(rate=audio_rate, width=audio_width, channels=audio_channels).event()
+                                _LOGGER.warning(
+                                    "Could not parse WAV header after buffering %d bytes, falling back to raw PCM",
+                                    len(pending_header),
                                 )
-                                send_audio_start = False  # Prevent re-sending AudioStart
+                                audio_data = pending_header
+                                pending_header = b""
+                                awaiting_wav_header = False
                         else:
-                            # Subsequent chunks: no header to strip
                             audio_data = chunk
 
-                        # Send audio chunk (header stripped for first chunk)
+                        if send_audio_start:
+                            await self.write_event(
+                                AudioStart(rate=audio_rate, width=audio_width, channels=audio_channels).event()
+                            )
+                            send_audio_start = False
+
+                        # Send audio chunk after any buffered WAV header bytes have been removed.
                         if audio_data:
                             await self.write_event(
                                 AudioChunk(
@@ -1245,6 +1273,32 @@ class OpenAIEventHandler(AsyncEventHandler):
                                 audio_width=audio_width,
                                 audio_channels=audio_channels,
                             )
+
+            if awaiting_wav_header and pending_header:
+                _LOGGER.warning(
+                    "TTS response ended before a complete WAV header was available, falling back to raw PCM"
+                )
+                if send_audio_start:
+                    await self.write_event(
+                        AudioStart(rate=audio_rate, width=audio_width, channels=audio_channels).event()
+                    )
+
+                await self.write_event(
+                    AudioChunk(
+                        audio=pending_header,
+                        rate=audio_rate,
+                        width=audio_width,
+                        channels=audio_channels,
+                        timestamp=int(timestamp),
+                    ).event()
+                )
+                timestamp = self._advance_audio_timestamp(
+                    timestamp,
+                    audio_data=pending_header,
+                    audio_rate=audio_rate,
+                    audio_width=audio_width,
+                    audio_channels=audio_channels,
+                )
 
             return timestamp
 

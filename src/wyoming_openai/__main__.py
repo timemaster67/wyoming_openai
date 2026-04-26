@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+from contextlib import AsyncExitStack
 from functools import partial
 
 from wyoming.server import AsyncServer
@@ -18,7 +19,12 @@ from .compatibility import (
 )
 from .const import DEFAULT_OPENAI_BASE_URL, __version__
 from .handler import OpenAIEventHandler
-from .utilities import create_enum_parser, create_json_object_parser, validate_stt_extra_body, validate_tts_extra_body
+from .utilities import (
+    create_enum_parser,
+    create_json_object_parser,
+    validate_stt_extra_body,
+    validate_tts_extra_body,
+)
 
 
 def configure_logging(level):
@@ -226,46 +232,61 @@ async def main():
 
     _logger.info("Starting Wyoming OpenAI %s", __version__)
 
-    # Create STT factory and client
-    if args.stt_backend is None:
-        _logger.debug("STT backend is None, autodetecting...")
-        stt_factory = CustomAsyncOpenAI.create_autodetected_factory()
-    else:
-        stt_factory = CustomAsyncOpenAI.create_backend_factory(args.stt_backend)
+    if not stt_requested and not tts_requested:
+        _logger.error("No STT or TTS models specified. Exiting.")
+        return
 
-    stt_client = await stt_factory(api_key=args.stt_openai_key, base_url=args.stt_openai_url)
-    _logger.debug("Detected STT backend: %s", stt_client.backend)
+    stt_client: CustomAsyncOpenAI | None = None
+    if stt_requested:
+        if args.stt_backend is None:
+            _logger.debug("STT backend is None, autodetecting...")
+            stt_factory = CustomAsyncOpenAI.create_autodetected_factory()
+        else:
+            stt_factory = CustomAsyncOpenAI.create_backend_factory(args.stt_backend)
 
-    # Create TTS factory and client
-    if args.tts_backend is None:
-        _logger.debug("TTS backend is None, autodetecting...")
-        tts_factory = CustomAsyncOpenAI.create_autodetected_factory()
-    else:
-        tts_factory = CustomAsyncOpenAI.create_backend_factory(args.tts_backend)
+        stt_client = await stt_factory(api_key=args.stt_openai_key, base_url=args.stt_openai_url)
+        _logger.debug("Detected STT backend: %s", stt_client.backend)
 
-    tts_client = await tts_factory(api_key=args.tts_openai_key, base_url=args.tts_openai_url)
-    _logger.debug("Detected TTS backend: %s", tts_client.backend)
+    tts_client: CustomAsyncOpenAI | None = None
+    if tts_requested:
+        if args.tts_backend is None:
+            _logger.debug("TTS backend is None, autodetecting...")
+            tts_factory = CustomAsyncOpenAI.create_autodetected_factory()
+        else:
+            tts_factory = CustomAsyncOpenAI.create_backend_factory(args.tts_backend)
 
-    # Use clients in async context managers
-    async with stt_client, tts_client:
-        asr_programs = create_asr_programs(
-            args.stt_models, args.stt_streaming_models, args.stt_openai_url, args.languages
+        tts_client = await tts_factory(api_key=args.tts_openai_key, base_url=args.tts_openai_url)
+        _logger.debug("Detected TTS backend: %s", tts_client.backend)
+
+    # Use only configured clients in async context managers
+    async with AsyncExitStack() as exit_stack:
+        if stt_client is not None:
+            stt_client = await exit_stack.enter_async_context(stt_client)
+        if tts_client is not None:
+            tts_client = await exit_stack.enter_async_context(tts_client)
+
+        asr_programs = (
+            create_asr_programs(args.stt_models, args.stt_streaming_models, args.stt_openai_url, args.languages)
+            if stt_requested
+            else []
         )
 
-        if args.tts_voices:
+        if not tts_requested:
+            tts_voices = []
+        elif args.tts_voices:
             # If TTS_VOICES is set, use that
             tts_voices = create_tts_voices(
                 args.tts_models, args.tts_streaming_models, args.tts_voices, args.tts_openai_url, args.languages
             )
         else:
             # Otherwise, list supported voices via backend (with streaming fallback)
+            assert tts_client is not None
             tts_voices = await tts_client.list_supported_voices(
                 args.tts_models, args.tts_streaming_models, args.languages
             )
 
         tts_programs = create_tts_programs(tts_voices, tts_streaming_models=args.tts_streaming_models)
 
-        # Ensure at least one model is specified
         if not asr_programs and not tts_programs:
             _logger.error("No STT or TTS models specified. Exiting.")
             return
