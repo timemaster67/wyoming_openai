@@ -3,7 +3,7 @@ from collections import Counter
 from enum import Enum
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, omit
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info, TtsProgram, TtsVoice
 
 from .const import (
@@ -378,10 +378,22 @@ class CustomAsyncOpenAI(AsyncOpenAI):
     def __init__(self, *args, **kwargs):
         if "api_key" not in kwargs or not kwargs["api_key"]:
             kwargs["api_key"] = ""
+            kwargs.setdefault("_enforce_credentials", False)
         if not kwargs.get("base_url"):
             kwargs["base_url"] = DEFAULT_OPENAI_BASE_URL
         self.backend: OpenAIBackend = kwargs.pop("backend", OpenAIBackend.OPENAI)
         super().__init__(*args, **kwargs)
+
+    async def _prepare_options(self, options):
+        # Local keyless backends (Speaches, LocalAI, Kokoro) don't require auth.
+        # Without an api_key the SDK refuses to send the request unless Authorization
+        # is explicitly omitted via the Omit sentinel on the per-request headers.
+        options = await super()._prepare_options(options)
+        if not self.api_key:
+            headers = dict(options.headers or {})
+            headers.setdefault("Authorization", omit)
+            options.headers = headers
+        return options
 
     # OpenAI
 
