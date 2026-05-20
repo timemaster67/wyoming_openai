@@ -47,6 +47,9 @@ include = ["wyoming_openai", "wyoming_openai.*"]
 
 [tool.pyright]
 exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
     ".git",
     ".github",
     ".venv",

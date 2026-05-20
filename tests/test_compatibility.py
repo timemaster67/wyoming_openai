@@ -170,9 +170,9 @@ async def test_keyless_request_omits_authorization(monkeypatch):
             "Opts",
             (),
             {"headers": None, "security": None},
-        )()
+        )()  # type: ignore[reportArgumentType]
     )
-    assert isinstance(options.headers["Authorization"], Omit)
+    assert isinstance(options.headers["Authorization"], Omit)  # type: ignore[reportIndexIssue]
 
 
 class TestOpenAIBackend:
