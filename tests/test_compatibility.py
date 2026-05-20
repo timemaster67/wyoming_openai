@@ -387,6 +387,36 @@ class TestHelperFunctions:
         programs = create_asr_programs([], [], "https://api.openai.com", ["en"])
         assert programs == []
 
+    def test_create_asr_programs_with_realtime_models(self):
+        """Test creating ASR programs with realtime transcription models."""
+        programs = create_asr_programs(
+            ["whisper-1"],
+            ["gpt-4o-transcribe"],
+            "https://api.openai.com",
+            ["en"],
+            stt_realtime_models=["gpt-realtime-whisper"],
+        )
+
+        assert [program.name for program in programs] == ["openai-realtime", "openai-streaming", "openai"]
+
+        realtime_prog = programs[0]
+        assert realtime_prog.supports_transcript_streaming is True
+        assert [model.name for model in realtime_prog.models] == ["gpt-realtime-whisper"]
+
+    def test_create_asr_programs_prefers_realtime_transport_for_duplicate_model(self):
+        """Test duplicate ASR model names are classified as realtime first."""
+        programs = create_asr_programs(
+            ["gpt-realtime-whisper"],
+            ["gpt-realtime-whisper"],
+            "https://api.openai.com",
+            ["en"],
+            stt_realtime_models=["gpt-realtime-whisper"],
+        )
+
+        assert len(programs) == 1
+        assert programs[0].name == "openai-realtime"
+        assert [model.name for model in programs[0].models] == ["gpt-realtime-whisper"]
+
     def test_create_tts_voices_detailed(self):
         """Test creating TTS voices with multiple models and voices."""
         models = ["tts-1", "tts-1-hd"]

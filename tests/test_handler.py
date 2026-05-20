@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import builtins
 import io
 import wave
@@ -5,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from openai import omit
-from wyoming.asr import Transcript
+from wyoming.asr import Transcript, TranscriptChunk
 from wyoming.event import Event
 from wyoming.info import Attribution, TtsVoice
 from wyoming.tts import SynthesizeChunk, SynthesizeStart, SynthesizeVoice
@@ -73,6 +75,68 @@ def handler(dummy_info, dummy_clients, dummy_reader_writer):
         stt_client=stt_client,
         tts_client=tts_client,
     )
+
+
+class _FakeRealtimeServerEvent:
+    def __init__(self, event_type, **kwargs):
+        self.type = event_type
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _FakeRealtimeSession:
+    def __init__(self):
+        self.update = AsyncMock()
+
+
+class _FakeRealtimeInputAudioBuffer:
+    def __init__(self, connection):
+        self._connection = connection
+        self.appended_audio = []
+        self.committed = False
+
+    async def append(self, *, audio):
+        self.appended_audio.append(audio)
+
+    async def commit(self):
+        self.committed = True
+        for event in self._connection.commit_events:
+            await self._connection.events.put(event)
+
+
+class _FakeRealtimeConnection:
+    def __init__(self, commit_events):
+        self.commit_events = commit_events
+        self.events = asyncio.Queue()
+        self.session = _FakeRealtimeSession()
+        self.input_audio_buffer = _FakeRealtimeInputAudioBuffer(self)
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        event = await self.events.get()
+        if event is None:
+            raise StopAsyncIteration
+        return event
+
+    async def close(self):
+        self.closed = True
+        await self.events.put(None)
+
+
+class _FakeRealtimeConnectionManager:
+    def __init__(self, connection):
+        self.connection = connection
+        self.exited = False
+
+    async def enter(self):
+        return self.connection
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.exited = True
+        await self.connection.close()
 
 
 @pytest.mark.asyncio
@@ -655,6 +719,106 @@ class TestOpenAIEventHandlerComprehensive:
                 assert transcript.text == "Test transcription"
                 break
         assert transcript_found
+
+    @pytest.mark.asyncio
+    async def test_handle_realtime_transcription_flow(self, enhanced_handler, mock_info, mock_clients):
+        """Test realtime STT emits deltas, final transcript, and cleanup without audio transcriptions API."""
+        stt_client, _ = mock_clients
+        mock_info.asr[0].models[0].name = "gpt-realtime-whisper"
+        enhanced_handler._stt_realtime_models = {"gpt-realtime-whisper"}
+
+        connection = _FakeRealtimeConnection(
+            [
+                _FakeRealtimeServerEvent("conversation.item.input_audio_transcription.delta", delta="Hello"),
+                _FakeRealtimeServerEvent(
+                    "conversation.item.input_audio_transcription.completed", transcript="Hello world"
+                ),
+            ]
+        )
+        manager = _FakeRealtimeConnectionManager(connection)
+        stt_client.realtime.connect = Mock(return_value=manager)
+        stt_client.audio.transcriptions.create = AsyncMock()
+
+        transcribe_event = Event(type="transcribe", data={"language": "en", "name": "gpt-realtime-whisper"})
+        assert await enhanced_handler.handle_event(transcribe_event) is True
+
+        audio_data = b"\x00\x01" * 100
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 24000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 24000, "width": 2, "channels": 1}, payload=audio_data)
+        )
+        await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        stt_client.realtime.connect.assert_called_once_with(model="gpt-realtime-whisper")
+        stt_client.audio.transcriptions.create.assert_not_called()
+        connection.session.update.assert_called_once()
+        session = connection.session.update.call_args.kwargs["session"]
+        assert session["type"] == "transcription"
+        assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+        assert session["audio"]["input"]["transcription"] == {"model": "gpt-realtime-whisper", "language": "en"}
+        assert session["audio"]["input"]["turn_detection"] is None
+        assert base64.b64decode(connection.input_audio_buffer.appended_audio[0]) == audio_data
+        assert connection.input_audio_buffer.committed is True
+
+        event_types = [call.args[0].type for call in enhanced_handler.write_event.call_args_list]
+        assert event_types == ["transcript-start", "transcript-chunk", "transcript", "transcript-stop"]
+        chunk_event = next(
+            call.args[0]
+            for call in enhanced_handler.write_event.call_args_list
+            if call.args[0].type == "transcript-chunk"
+        )
+        assert TranscriptChunk.from_event(chunk_event).text == "Hello"
+        transcript_event = next(
+            call.args[0] for call in enhanced_handler.write_event.call_args_list if call.args[0].type == "transcript"
+        )
+        assert Transcript.from_event(transcript_event).text == "Hello world"
+        assert manager.exited is True
+        assert connection.closed is True
+        assert enhanced_handler._realtime_receive_task is None
+
+    @pytest.mark.asyncio
+    async def test_handle_realtime_transcription_error_cleans_up(self, enhanced_handler, mock_info, mock_clients):
+        """Test realtime STT errors emit TranscriptStop and clean up the websocket task."""
+        stt_client, _ = mock_clients
+        mock_info.asr[0].models[0].name = "gpt-realtime-whisper"
+        enhanced_handler._stt_realtime_models = {"gpt-realtime-whisper"}
+
+        connection = _FakeRealtimeConnection(
+            [
+                _FakeRealtimeServerEvent(
+                    "conversation.item.input_audio_transcription.failed", error={"message": "bad audio"}
+                )
+            ]
+        )
+        manager = _FakeRealtimeConnectionManager(connection)
+        stt_client.realtime.connect = Mock(return_value=manager)
+        stt_client.audio.transcriptions.create = AsyncMock()
+
+        assert await enhanced_handler.handle_event(
+            Event(type="transcribe", data={"language": "en", "name": "gpt-realtime-whisper"})
+        )
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 24000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 24000, "width": 2, "channels": 1}, payload=b"\x00\x01" * 10)
+        )
+        await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        stt_client.audio.transcriptions.create.assert_not_called()
+        event_types = [call.args[0].type for call in enhanced_handler.write_event.call_args_list]
+        assert event_types == ["transcript-start", "transcript-stop"]
+        assert manager.exited is True
+        assert connection.closed is True
+        assert enhanced_handler._realtime_receive_task is None
+
+    def test_convert_audio_to_realtime_pcm_resamples_to_24khz(self, enhanced_handler):
+        """Test Wyoming PCM is converted to OpenAI Realtime's 24 kHz PCM16 format."""
+        source_audio = b"\x00\x00\xe8\x03"
+
+        converted = enhanced_handler._convert_audio_to_realtime_pcm(
+            source_audio, sample_rate=16000, audio_width=2, audio_channels=1
+        )
+
+        assert len(converted) == 6
 
     @pytest.mark.asyncio
     async def test_handle_transcribe_preserves_configured_speaches_vad_filter(self, enhanced_handler, mock_clients):

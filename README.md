@@ -17,6 +17,7 @@ This project introduces a [Wyoming](https://github.com/OHF-Voice/wyoming) server
 This project features a variety of examples for using cutting-edge models in both Speech-to-Text (STT) and Text-to-Speech (TTS) scenarios:
 
 - **`gpt-4o-transcribe`**: OpenAI's latest and most advanced model for highly accurate speech recognition.
+- **`gpt-realtime-whisper`**: OpenAI's recommended low-latency realtime transcription model for live audio and transcript deltas.
 - **`gpt-4o-mini-tts`**: A compact and efficient text-to-speech model from OpenAI, perfect for responsive vocalization.
 - **`voxtral-mini-latest`**: Mistral AI's multilingual Voxtral ASR, built for long-form audio (32k token context) and tested on up to ~30 minutes per file, available via [Mistral AI](#5-deploying-with-mistral-ai-voxtral) or self-hosted open weights.
 - **`kokoro`**: A high-quality, open-source text-to-speech model, available for local deployment via [Speaches](#2-deploying-with-speaches-local-service) and [Kokoro-FastAPI](#4-deploying-with-kokoro-fastapi-and-speaches-local-services).
@@ -138,6 +139,7 @@ python -m wyoming_openai \
   --stt-openai-url https://api.openai.com/v1 \
   --stt-models whisper-1 \
   --stt-streaming-models gpt-4o-transcribe gpt-4o-mini-transcribe \
+  --stt-realtime-models gpt-realtime-whisper \
   --stt-backend OPENAI \
   --tts-openai-key YOUR_TTS_API_KEY_HERE \
   --tts-openai-url https://api.openai.com/v1 \
@@ -163,6 +165,7 @@ In addition to using command-line arguments, you can configure the Wyoming OpenA
 | `--stt-openai-url`                      | `STT_OPENAI_URL`                           | https://api.openai.com/v1                     | The base URL for the OpenAI-compatible speech-to-text API            |
 | `--stt-models`                          | `STT_MODELS`                               | None (required*)                                          | Space-separated list of models to use for the STT service. Example: `gpt-4o-transcribe gpt-4o-mini-transcribe whisper-1` |
 | `--stt-streaming-models`                | `STT_STREAMING_MODELS`                     | None                                          | Space-separated list of STT models that support streaming (e.g. `gpt-4o-transcribe gpt-4o-mini-transcribe`). Only these models will use streaming mode. |
+| `--stt-realtime-models`                 | `STT_REALTIME_MODELS`                      | None                                          | Space-separated list of STT models that use OpenAI Realtime transcription sessions (e.g. `gpt-realtime-whisper`). These models stream audio over `/v1/realtime` and emit Wyoming `TranscriptChunk` deltas before the final transcript. |
 | `--stt-backend`                         | `STT_BACKEND`                              | None (autodetected)                           | Enable unofficial API feature sets.          |
 | `--stt-temperature`                     | `STT_TEMPERATURE`                          | None (autodetected)                           | Sampling temperature for speech-to-text (ranges from 0.0 to 1.0)               |
 | `--stt-prompt`                          | `STT_PROMPT`                               | None                                          | Optional prompt for STT requests (Text to guide the model's style).   |
@@ -179,7 +182,9 @@ In addition to using command-line arguments, you can configure the Wyoming OpenA
 | `--tts-streaming-min-words`             | `TTS_STREAMING_MIN_WORDS`                  | None                                          | Minimum words per text chunk for incremental TTS streaming (optional). |
 | `--tts-streaming-max-chars`             | `TTS_STREAMING_MAX_CHARS`                  | None                                          | Maximum characters per text chunk for incremental TTS streaming (optional). |
 
-Both `STT_EXTRA_BODY` and `TTS_EXTRA_BODY` must be valid JSON objects. The OpenAI client merges these values into the outgoing request body rather than sending a nested `extra_body` field. Supported overlaps still need to match Wyoming's transport expectations: STT continues to require `response_format="json"`, and a boolean `stream` override will update both the request body and the client's response parser. TTS can override raw-audio fields such as `response_format`, `speed`, and `instructions`, but rejects `stream` and `stream_format` because the handler expects audio bytes instead of SSE-style framing.
+`STT_STREAMING_MODELS` and `STT_REALTIME_MODELS` select different STT transports. `STT_STREAMING_MODELS` still uses `/v1/audio/transcriptions` with response streaming after Wyoming `AudioStop`. `STT_REALTIME_MODELS` opens a `/v1/realtime` transcription session, sends 24 kHz mono PCM16 audio chunks as Wyoming audio arrives, commits on Wyoming `AudioStop`, and emits `TranscriptChunk` deltas plus a final `Transcript`.
+
+Both `STT_EXTRA_BODY` and `TTS_EXTRA_BODY` must be valid JSON objects. The OpenAI client merges these values into the outgoing request body rather than sending a nested `extra_body` field. Supported overlaps still need to match Wyoming's transport expectations: STT continues to require `response_format="json"`, and a boolean `stream` override will update both the request body and the client's response parser for `/v1/audio/transcriptions`. TTS can override raw-audio fields such as `response_format`, `speed`, and `instructions`, but rejects `stream` and `stream_format` because the handler expects audio bytes instead of SSE-style framing.
 
 ## Docker (Recommended) [![Docker Image CI](https://github.com/roryeckel/wyoming-openai/actions/workflows/docker-image.yml/badge.svg)](https://github.com/roryeckel/wyoming-openai/actions/workflows/docker-image.yml)
 
