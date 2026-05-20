@@ -44,7 +44,7 @@ Example: Sharing TTS/STT services between [Open WebUI](#open-webui) and [Home As
 
 ### Prerequisites
 
-- Tested with Python 3.12
+- Tested with Python 3.12 and 3.13
 - Optional: OpenAI API key(s) if using proprietary models
 
 ### Instructions

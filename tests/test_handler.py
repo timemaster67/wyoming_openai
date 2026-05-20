@@ -884,6 +884,127 @@ class TestOpenAIEventHandlerComprehensive:
         assert call_args["extra_body"] == {"response_format": "pcm"}
 
     @pytest.mark.asyncio
+    async def test_stream_audio_to_wyoming_uses_frame_count_for_stereo_audio(self, enhanced_handler):
+        """Test stereo audio timestamps are based on PCM frames, not per-channel samples."""
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(2)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01\x02\x03" * 24000)
+        wav_buffer.seek(0)
+
+        timestamp = await enhanced_handler._stream_audio_to_wyoming(
+            wav_buffer.read(),
+            is_first_chunk=True,
+            start_timestamp=0,
+        )
+
+        assert timestamp == pytest.approx(1000.0)
+
+    @pytest.mark.asyncio
+    async def test_stream_tts_audio_uses_frame_count_for_stereo_audio(self, enhanced_handler, mock_clients):
+        """Test direct TTS streaming preserves correct stereo timing."""
+        _, tts_client = mock_clients
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(2)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01\x02\x03" * 24000)
+        wav_buffer.seek(0)
+        mock_audio_data = wav_buffer.read()
+
+        class MockAsyncIterator:
+            def __init__(self, data):
+                self.data = data
+                self.chunks = [data]
+                self.index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.chunks):
+                    raise StopAsyncIteration
+                chunk = self.chunks[self.index]
+                self.index += 1
+                return chunk
+
+        mock_response = Mock()
+        mock_response.iter_bytes = Mock(return_value=MockAsyncIterator(mock_audio_data))
+
+        mock_stream_response = AsyncMock()
+        mock_stream_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_response.__aexit__ = AsyncMock(return_value=None)
+
+        tts_client.audio.speech.with_streaming_response.create = Mock(return_value=mock_stream_response)
+
+        voice = enhanced_handler._get_voice("alloy")
+        assert voice is not None
+
+        timestamp = await enhanced_handler._stream_tts_audio(voice, "Hello world", send_audio_start=True)
+
+        assert timestamp == pytest.approx(1000.0)
+
+    @pytest.mark.asyncio
+    async def test_stream_tts_audio_buffers_fragmented_wav_header(self, enhanced_handler, mock_clients):
+        """Test fragmented WAV headers are buffered without breaking stereo timestamps."""
+        _, tts_client = mock_clients
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(2)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x01\x02\x03" * 1000)
+        wav_buffer.seek(0)
+        wav_data = wav_buffer.read()
+
+        fragmented_chunks = [wav_data[:20], wav_data[20:60], wav_data[60:]]
+
+        class MockAsyncIterator:
+            def __init__(self, chunks):
+                self.chunks = chunks
+                self.index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.index >= len(self.chunks):
+                    raise StopAsyncIteration
+                chunk = self.chunks[self.index]
+                self.index += 1
+                return chunk
+
+        mock_response = Mock()
+        mock_response.iter_bytes = Mock(return_value=MockAsyncIterator(fragmented_chunks))
+
+        mock_stream_response = AsyncMock()
+        mock_stream_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_response.__aexit__ = AsyncMock(return_value=None)
+
+        tts_client.audio.speech.with_streaming_response.create = Mock(return_value=mock_stream_response)
+
+        voice = enhanced_handler._get_voice("alloy")
+        assert voice is not None
+
+        enhanced_handler.write_event.reset_mock()
+        timestamp = await enhanced_handler._stream_tts_audio(voice, "Hello world", send_audio_start=True)
+
+        expected_frames = (len(wav_data) - 44) // (2 * 2)
+        assert timestamp == pytest.approx(expected_frames / 24000 * 1000)
+
+        audio_chunk_events = [
+            call.args[0] for call in enhanced_handler.write_event.call_args_list if call.args[0].type == "audio-chunk"
+        ]
+        assert audio_chunk_events
+        assert audio_chunk_events[0].payload == wav_data[44:60]
+        assert b"".join(event.payload for event in audio_chunk_events) == wav_data[44:]
+
+    @pytest.mark.asyncio
     async def test_handle_streaming_synthesis(self, enhanced_handler, mock_clients):
         """Test handling of streaming synthesis events."""
         _, tts_client = mock_clients

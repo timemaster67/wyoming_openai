@@ -3,7 +3,7 @@ from collections import Counter
 from enum import Enum
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, omit
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info, TtsProgram, TtsVoice
 
 from .const import (
@@ -378,10 +378,22 @@ class CustomAsyncOpenAI(AsyncOpenAI):
     def __init__(self, *args, **kwargs):
         if "api_key" not in kwargs or not kwargs["api_key"]:
             kwargs["api_key"] = ""
+            kwargs.setdefault("_enforce_credentials", False)
         if not kwargs.get("base_url"):
             kwargs["base_url"] = DEFAULT_OPENAI_BASE_URL
         self.backend: OpenAIBackend = kwargs.pop("backend", OpenAIBackend.OPENAI)
         super().__init__(*args, **kwargs)
+
+    async def _prepare_options(self, options):
+        # Local keyless backends (Speaches, LocalAI, Kokoro) don't require auth.
+        # Without an api_key the SDK refuses to send the request unless Authorization
+        # is explicitly omitted via the Omit sentinel on the per-request headers.
+        options = await super()._prepare_options(options)
+        if not self.api_key:
+            headers = dict(options.headers or {})
+            headers.setdefault("Authorization", omit)
+            options.headers = headers
+        return options
 
     # OpenAI
 
@@ -410,7 +422,7 @@ class CustomAsyncOpenAI(AsyncOpenAI):
         """
         Fetches the available audio voices from the Kokoro-FastAPI /audio/voices endpoint.
         Caution: This is not a part of official OpenAI spec.
-        Example: ["af_sky"]
+        Example Response: {"voices": ["af_sky", "af_bella", ...]}
         """
         if self.backend != OpenAIBackend.KOKORO_FASTAPI:
             _LOGGER.debug("Skipping /audio/voices request because backend is not KOKORO_FASTAPI")
@@ -420,8 +432,8 @@ class CustomAsyncOpenAI(AsyncOpenAI):
             response = await self._client.get("/audio/voices")
             response.raise_for_status()
             return response.json().get("voices", [])
-        except Exception as e:
-            _LOGGER.exception(e, "Failed to fetch /audio/voices")
+        except Exception:
+            _LOGGER.exception("Failed to fetch /audio/voices")
             raise
 
     # LocalAI
@@ -494,8 +506,8 @@ class CustomAsyncOpenAI(AsyncOpenAI):
             result = response.json()
             if "voices" in result:
                 return [voice["name"] for voice in result.get("voices", [])]
-        except Exception as e:
-            _LOGGER.exception(e, "Failed to fetch /models/%s, checking legacy endpoint...")
+        except Exception:
+            _LOGGER.exception("Failed to fetch /models/%s, checking legacy endpoint...", model_name)
 
         # LEGACY Endpoint
         # Example: [{"model_id": "hexgrad/Kokoro-82M", "voice_id": "af_sky"}]
@@ -504,8 +516,8 @@ class CustomAsyncOpenAI(AsyncOpenAI):
             response.raise_for_status()
             result = response.json()
             return [voice["voice_id"] for voice in result]
-        except Exception as e:
-            _LOGGER.exception(e, "Failed to fetch /audio/speech/voices")
+        except Exception:
+            _LOGGER.exception("Failed to fetch /audio/speech/voices")
             raise
 
     # Unified API

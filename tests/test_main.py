@@ -215,8 +215,11 @@ class _FakeClient:
 
 
 class _CapturingServer:
+    def __init__(self):
+        self.handlers = []
+
     async def run(self, handler_factory):
-        handler_factory(Mock(name="reader"), Mock(name="writer"))
+        self.handlers.append(handler_factory(Mock(name="reader"), Mock(name="writer")))
 
 
 @pytest.mark.asyncio
@@ -285,3 +288,83 @@ async def test_main_allows_unused_stt_response_format_in_tts_only_mode(monkeypat
     )
 
     await main()
+
+
+@pytest.mark.asyncio
+async def test_main_skips_tts_client_creation_in_stt_only_mode(monkeypatch):
+    server = _CapturingServer()
+    factory_calls = []
+
+    async def fake_factory(*args, **kwargs):
+        factory_calls.append(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        main_module.CustomAsyncOpenAI,
+        "create_autodetected_factory",
+        staticmethod(lambda: fake_factory),
+    )
+    monkeypatch.setattr(
+        main_module.AsyncServer,
+        "from_uri",
+        staticmethod(lambda uri: server),
+    )
+    for env_var in ("TTS_MODELS", "TTS_STREAMING_MODELS", "TTS_VOICES"):
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming_openai",
+            "--stt-models",
+            "whisper-1",
+        ],
+    )
+
+    await main()
+
+    assert len(factory_calls) == 1
+    assert len(server.handlers) == 1
+    assert server.handlers[0]._stt_client is not None
+    assert server.handlers[0]._tts_client is None
+
+
+@pytest.mark.asyncio
+async def test_main_skips_stt_client_creation_in_tts_only_mode(monkeypatch):
+    server = _CapturingServer()
+    factory_calls = []
+
+    async def fake_factory(*args, **kwargs):
+        factory_calls.append(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        main_module.CustomAsyncOpenAI,
+        "create_autodetected_factory",
+        staticmethod(lambda: fake_factory),
+    )
+    monkeypatch.setattr(
+        main_module.AsyncServer,
+        "from_uri",
+        staticmethod(lambda uri: server),
+    )
+    for env_var in ("STT_MODELS", "STT_STREAMING_MODELS"):
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming_openai",
+            "--tts-models",
+            "tts-1",
+            "--tts-voices",
+            "alloy",
+        ],
+    )
+
+    await main()
+
+    assert len(factory_calls) == 1
+    assert len(server.handlers) == 1
+    assert server.handlers[0]._stt_client is None
+    assert server.handlers[0]._tts_client is not None

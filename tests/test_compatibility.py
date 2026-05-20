@@ -132,6 +132,49 @@ def test_custom_async_openai_init_sets_backend(monkeypatch):
     assert c.backend == OpenAIBackend.SPEACHES
 
 
+@pytest.mark.asyncio
+async def test_keyless_request_omits_authorization(monkeypatch):
+    """Keyless local backends (Speaches/LocalAI/Kokoro) must reach the wire
+    without an Authorization header — openai>=2.34 otherwise refuses to send
+    the request. Guards [compatibility.py] _prepare_options injection."""
+    from openai import APIConnectionError, Omit
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+
+    captured: dict = {}
+
+    async def fake_send(self, request, **kwargs):
+        captured["headers"] = dict(request.headers)
+        raise APIConnectionError(request=request)
+
+    monkeypatch.setattr("httpx.AsyncClient.send", fake_send)
+
+    client = CustomAsyncOpenAI(
+        backend=OpenAIBackend.SPEACHES,
+        base_url="http://127.0.0.1:9/v1",
+    )
+    assert client.api_key == ""
+
+    with pytest.raises(APIConnectionError):
+        await client.audio.transcriptions.create(
+            model="whisper-1", file=("x.wav", b"RIFF")
+        )
+
+    # Authorization must not be sent on the wire for keyless backends.
+    assert "authorization" not in captured["headers"]
+
+    # The Omit sentinel must be exposed on per-request options for SDK validation.
+    options = await client._prepare_options(
+        type(
+            "Opts",
+            (),
+            {"headers": None, "security": None},
+        )()  # type: ignore[reportArgumentType]
+    )
+    assert isinstance(options.headers["Authorization"], Omit)  # type: ignore[reportIndexIssue]
+
+
 class TestOpenAIBackend:
     """Test OpenAIBackend enum."""
 
