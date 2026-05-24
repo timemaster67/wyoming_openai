@@ -297,7 +297,7 @@ class OpenAIEventHandler(AsyncEventHandler):
         self._audio_channels = audio_channels
 
         try:
-            self._realtime_connection_manager = self._stt_client.realtime.connect(model=self._current_asr_model.name)
+            self._realtime_connection_manager = self._connect_realtime_transcription()
             connection = await self._enter_realtime_connection(self._realtime_connection_manager)
             self._realtime_connection = connection
             self._realtime_transcript_future = asyncio.get_running_loop().create_future()
@@ -378,6 +378,12 @@ class OpenAIEventHandler(AsyncEventHandler):
             return await enter()
 
         return await connection_manager.__aenter__()
+
+    def _connect_realtime_transcription(self) -> Any:
+        """Create a Realtime transcription-session websocket connection manager."""
+        if self._stt_client is None:
+            raise RealtimeTranscriptionError("No STT client configured for realtime transcription")
+        return self._stt_client.realtime.connect(extra_query={"intent": "transcription"})
 
     def _get_realtime_transcription_session(self) -> dict[str, object]:
         """Build a Realtime transcription session update payload."""
