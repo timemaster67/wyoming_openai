@@ -396,6 +396,8 @@ class OpenAIEventHandler(AsyncEventHandler):
         transcription: dict[str, object] = {"model": self._current_asr_model.name}
         if self._current_language is not None:
             transcription["language"] = self._current_language
+        if self._stt_prompt is not None:
+            transcription["prompt"] = self._stt_prompt
 
         return {
             "type": "transcription",
