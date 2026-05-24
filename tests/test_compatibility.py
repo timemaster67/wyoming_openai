@@ -508,3 +508,35 @@ class TestBackendSpecificBehavior:
             assert all(set(v.languages) == {"en", "ja"} for v in voices)
             assert voices[0].name == "af_sky"
             assert voices[1].name == "bf_emma"
+
+    @pytest.mark.asyncio
+    async def test_kokoro_fastapi_voice_endpoint_accepts_new_catalog_shape(self):
+        """Test Kokoro FastAPI voice listing with the current catalog response shape."""
+        custom_client = CustomAsyncOpenAI(api_key="test-key", backend=OpenAIBackend.KOKORO_FASTAPI)
+        response = Mock()
+        response.json.return_value = [
+            {"id": "af_sky", "name": "Sky"},
+            {"id": "bf_emma", "name": "Emma"},
+        ]
+        response.raise_for_status.return_value = None
+
+        with patch.object(custom_client._client, "get", AsyncMock(return_value=response)) as mock_get:
+            voices = await custom_client._list_kokoro_fastapi_voices()
+
+        assert voices == ["af_sky", "bf_emma"]
+        mock_get.assert_awaited_once_with("/audio/voices")
+
+    @pytest.mark.asyncio
+    async def test_kokoro_fastapi_voice_endpoint_accepts_legacy_shapes(self):
+        """Test Kokoro FastAPI voice listing with legacy string-list response shapes."""
+        custom_client = CustomAsyncOpenAI(api_key="test-key", backend=OpenAIBackend.KOKORO_FASTAPI)
+
+        for payload in (["af_sky", "bf_emma"], {"voices": ["af_sky", "bf_emma"]}):
+            response = Mock()
+            response.json.return_value = payload
+            response.raise_for_status.return_value = None
+
+            with patch.object(custom_client._client, "get", AsyncMock(return_value=response)):
+                voices = await custom_client._list_kokoro_fastapi_voices()
+
+            assert voices == ["af_sky", "bf_emma"]
