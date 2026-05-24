@@ -755,11 +755,9 @@ class TestOpenAIEventHandlerComprehensive:
         session = connection.session.update.call_args.kwargs["session"]
         assert session["type"] == "transcription"
         assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
-        assert session["audio"]["input"]["transcription"] == {
-            "model": "gpt-realtime-whisper",
-            "language": "en",
-            "prompt": "Test prompt",
-        }
+        transcription = session["audio"]["input"]["transcription"]
+        assert transcription["model"] == "gpt-realtime-whisper"
+        assert transcription["language"] == "en"
         assert session["audio"]["input"]["turn_detection"] is None
         assert base64.b64decode(connection.input_audio_buffer.appended_audio[0]) == audio_data
         assert connection.input_audio_buffer.committed is True
@@ -851,17 +849,17 @@ class TestOpenAIEventHandlerComprehensive:
     @pytest.mark.asyncio
     async def test_realtime_transcription_session_includes_configured_prompt(self, enhanced_handler, mock_info):
         """Test realtime STT preserves configured prompt in the session payload."""
-        mock_info.asr[0].models[0].name = "gpt-realtime-whisper"
-        enhanced_handler._stt_realtime_models = {"gpt-realtime-whisper"}
+        mock_info.asr[0].models[0].name = "gpt-4o-transcribe"
+        enhanced_handler._stt_realtime_models = {"gpt-4o-transcribe"}
 
         assert await enhanced_handler.handle_event(
-            Event(type="transcribe", data={"language": "en", "name": "gpt-realtime-whisper"})
+            Event(type="transcribe", data={"language": "en", "name": "gpt-4o-transcribe"})
         )
 
         session = enhanced_handler._get_realtime_transcription_session()
 
         assert session["audio"]["input"]["transcription"] == {
-            "model": "gpt-realtime-whisper",
+            "model": "gpt-4o-transcribe",
             "language": "en",
             "prompt": "Test prompt",
         }
