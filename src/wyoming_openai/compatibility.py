@@ -100,6 +100,31 @@ def _create_tts_voice_models(
     return voices
 
 
+def _extract_voice_names(result: object) -> list[str]:
+    """Extract backend voice identifiers from common voice-list response shapes."""
+    voices = result.get("voices", []) if isinstance(result, dict) else result
+
+    if not isinstance(voices, list):
+        _LOGGER.warning("Unexpected voices response shape: %s", type(voices).__name__)
+        return []
+
+    voice_names = []
+    for voice in voices:
+        if isinstance(voice, str):
+            voice_names.append(voice)
+            continue
+
+        if isinstance(voice, dict):
+            voice_name = voice.get("id") or voice.get("name")
+            if isinstance(voice_name, str):
+                voice_names.append(voice_name)
+                continue
+
+        _LOGGER.warning("Skipping unexpected voice entry: %r", voice)
+
+    return voice_names
+
+
 def create_asr_programs(
     stt_models: list[str],
     stt_streaming_models: list[str],
@@ -438,7 +463,9 @@ class CustomAsyncOpenAI(AsyncOpenAI):
         """
         Fetches the available audio voices from the Kokoro-FastAPI /audio/voices endpoint.
         Caution: This is not a part of official OpenAI spec.
-        Example Response: {"voices": ["af_sky", "af_bella", ...]}
+        Example legacy response: ["af_sky", "af_bella", ...]
+        Example old response: {"voices": ["af_sky", "af_bella", ...]}
+        Example current response: [{"id": "af_sky", "name": "Sky"}, ...]
         """
         if self.backend != OpenAIBackend.KOKORO_FASTAPI:
             _LOGGER.debug("Skipping /audio/voices request because backend is not KOKORO_FASTAPI")
@@ -447,7 +474,7 @@ class CustomAsyncOpenAI(AsyncOpenAI):
         try:
             response = await self._client.get("/audio/voices")
             response.raise_for_status()
-            return response.json().get("voices", [])
+            return _extract_voice_names(response.json())
         except Exception:
             _LOGGER.exception("Failed to fetch /audio/voices")
             raise
