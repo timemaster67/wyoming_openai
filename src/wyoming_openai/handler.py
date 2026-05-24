@@ -353,10 +353,10 @@ class OpenAIEventHandler(AsyncEventHandler):
 
         self._is_recording = False
 
+        transcript_sent = False
         try:
             if self._realtime_transcript_future is None:
-                _LOGGER.error("Realtime transcription future was not initialized")
-                return
+                raise RealtimeTranscriptionError("Realtime transcription future was not initialized")
 
             await self._realtime_connection.input_audio_buffer.commit()
             transcript = await self._realtime_transcript_future
@@ -365,8 +365,11 @@ class OpenAIEventHandler(AsyncEventHandler):
             else:
                 _LOGGER.warning("Received empty realtime transcription result")
             await self.write_event(Transcript(text=transcript).event())
+            transcript_sent = True
         except Exception as err:
             _LOGGER.exception("Error during realtime transcription: %s", err)
+            if not transcript_sent:
+                await self.write_event(Transcript(text="").event())
         finally:
             await self.write_event(TranscriptStop().event())
             await self._cleanup_realtime_transcription()

@@ -778,7 +778,7 @@ class TestOpenAIEventHandlerComprehensive:
 
     @pytest.mark.asyncio
     async def test_handle_realtime_transcription_error_cleans_up(self, enhanced_handler, mock_info, mock_clients):
-        """Test realtime STT errors emit TranscriptStop and clean up the websocket task."""
+        """Test realtime STT errors emit final Transcript and clean up the websocket task."""
         stt_client, _ = mock_clients
         mock_info.asr[0].models[0].name = "gpt-realtime-whisper"
         enhanced_handler._stt_realtime_models = {"gpt-realtime-whisper"}
@@ -806,10 +806,33 @@ class TestOpenAIEventHandlerComprehensive:
         stt_client.realtime.connect.assert_called_once_with(extra_query={"intent": "transcription"})
         stt_client.audio.transcriptions.create.assert_not_called()
         event_types = [call.args[0].type for call in enhanced_handler.write_event.call_args_list]
-        assert event_types == ["transcript-start", "transcript-stop"]
+        assert event_types == ["transcript-start", "transcript", "transcript-stop"]
+        transcript_event = next(
+            call.args[0] for call in enhanced_handler.write_event.call_args_list if call.args[0].type == "transcript"
+        )
+        assert Transcript.from_event(transcript_event).text == ""
         assert manager.exited is True
         assert connection.closed is True
         assert enhanced_handler._realtime_receive_task is None
+
+    @pytest.mark.asyncio
+    async def test_handle_realtime_audio_stop_missing_future_emits_final_transcript(self, enhanced_handler):
+        """Test realtime STT stop emits final Transcript when future state is missing."""
+        connection = Mock()
+        connection.input_audio_buffer.commit = AsyncMock()
+        connection.close = AsyncMock()
+        enhanced_handler._is_recording = True
+        enhanced_handler._realtime_connection = connection
+        enhanced_handler._realtime_transcript_future = None
+        enhanced_handler.write_event = AsyncMock()
+
+        await enhanced_handler._handle_realtime_audio_stop()
+
+        event_types = [call.args[0].type for call in enhanced_handler.write_event.call_args_list]
+        assert event_types == ["transcript", "transcript-stop"]
+        transcript_event = enhanced_handler.write_event.call_args_list[0].args[0]
+        assert Transcript.from_event(transcript_event).text == ""
+        connection.input_audio_buffer.commit.assert_not_called()
 
     def test_convert_audio_to_realtime_pcm_resamples_to_24khz(self, enhanced_handler):
         """Test Wyoming PCM is converted to OpenAI Realtime's 24 kHz PCM16 format."""
