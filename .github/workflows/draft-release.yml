@@ -227,6 +227,8 @@ jobs:
                   body = trim_body(pr.get("body") or "")
                   if body:
                       out.append(f"  {body}")
+              # Blank line so a following block (e.g. `### Other commits`) renders correctly.
+              out.append("")
           else:
               out.append("_No merged pull requests in this range._")
               out.append("")
