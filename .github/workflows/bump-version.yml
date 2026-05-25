@@ -1,0 +1,150 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Which part of the version to bump"
+        required: true
+        default: minor
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Compute new version
+        id: version
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          set -euo pipefail
+          current="$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' pyproject.toml | head -n1 | sed -E 's/version = "(.+)"/\1/')"
+          if [[ -z "$current" ]]; then
+            echo "Could not parse current version from pyproject.toml" >&2
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<<"$current"
+          case "$BUMP_TYPE" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            *) echo "Invalid bump_type: $BUMP_TYPE" >&2; exit 1 ;;
+          esac
+          new="${major}.${minor}.${patch}"
+          minor_only="${major}.${minor}"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "minor_only=$minor_only" >> "$GITHUB_OUTPUT"
+          echo "branch=release/v$new" >> "$GITHUB_OUTPUT"
+          echo "Bumping $current -> $new ($BUMP_TYPE)"
+
+      - name: Fail if release branch already exists
+        env:
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists on origin. Delete it before re-running." >&2
+            exit 1
+          fi
+
+      - name: Update version strings
+        env:
+          OLD: ${{ steps.version.outputs.current }}
+          NEW: ${{ steps.version.outputs.new }}
+          NEW_MINOR: ${{ steps.version.outputs.minor_only }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os, re, pathlib
+          old = os.environ["OLD"]
+          new = os.environ["NEW"]
+          new_minor = os.environ["NEW_MINOR"]
+          old_major, old_minor, _ = old.split(".")
+          old_minor_only = f"{old_major}.{old_minor}"
+
+          pyproject = pathlib.Path("pyproject.toml")
+          text = pyproject.read_text()
+          updated, n = re.subn(
+              rf'^version = "{re.escape(old)}"$',
+              f'version = "{new}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if n != 1:
+              raise SystemExit(f"Failed to update version in pyproject.toml (matches={n})")
+          pyproject.write_text(updated)
+
+          readme = pathlib.Path("README.md")
+          rtext = readme.read_text()
+          # Bump the x.y.z example
+          rtext, n1 = re.subn(
+              rf"\(e\.g\., `{re.escape(old)}`\)",
+              f"(e.g., `{new}`)",
+              rtext,
+              count=1,
+          )
+          if n1 != 1:
+              raise SystemExit(
+                  f"Failed to update x.y.z example in README.md "
+                  f"(expected 1 match for `{old}`, got {n1}). "
+                  "Update the README wording or this workflow's regex."
+              )
+          # Bump the x.y example (only if it changed — patch bumps leave minor unchanged)
+          n2 = 0
+          if old_minor_only != new_minor:
+              rtext, n2 = re.subn(
+                  rf"\(e\.g\., `{re.escape(old_minor_only)}`\)",
+                  f"(e.g., `{new_minor}`)",
+                  rtext,
+                  count=1,
+              )
+              if n2 != 1:
+                  raise SystemExit(
+                      f"Failed to update x.y example in README.md "
+                      f"(expected 1 match for `{old_minor_only}`, got {n2}). "
+                      "Update the README wording or this workflow's regex."
+                  )
+          readme.write_text(rtext)
+          print(f"README.md: replaced {n1} x.y.z example, {n2} x.y example")
+          PY
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.version.outputs.branch }}
+          base: main
+          commit-message: "chore(release): bump version to v${{ steps.version.outputs.new }}"
+          title: "chore(release): bump version to v${{ steps.version.outputs.new }}"
+          body: |
+            Automated version bump from `v${{ steps.version.outputs.current }}` to `v${{ steps.version.outputs.new }}` (`${{ inputs.bump_type }}`).
+
+            Files updated:
+            - `pyproject.toml` — `version` field
+            - `README.md` — Docker tags examples
+
+            Merging this PR will trigger the **Draft Release** workflow, which creates a draft GitHub release with auto-generated notes. Publishing that draft release fires the existing PyPI and Docker `latest` workflows.
+
+            Triggered by: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          labels: release-bump
+          delete-branch: true
+          sign-commits: false
+          committer: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          author: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"

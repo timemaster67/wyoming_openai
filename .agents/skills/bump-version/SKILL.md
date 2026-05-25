@@ -7,6 +7,11 @@ disable-model-invocation: true
 
 Bump version $ARGUMENTS.
 
+For releases off `main`, prefer the GitHub Actions **Bump Version** workflow
+(`.github/workflows/bump-version.yml`) — it performs the same edits, opens a
+labeled PR, and chains into the draft-release workflow on merge. Use this skill
+locally when working off a non-main branch or when you need `estimate` mode.
+
 Steps:
 1. Read current version from `pyproject.toml` (line containing `version = "x.y.z"`)
 2. If no argument provided, default to minor bump

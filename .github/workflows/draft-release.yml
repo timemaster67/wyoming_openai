@@ -1,0 +1,244 @@
+name: Draft Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to draft (without leading v). Defaults to the version currently in pyproject.toml."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  draft:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'release-bump'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_VERSION:-}" ]]; then
+            new="$INPUT_VERSION"
+          else
+            new="$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' pyproject.toml | head -n1 | sed -E 's/version = "(.+)"/\1/')"
+          fi
+          if [[ -z "$new" ]]; then
+            echo "Could not determine new version" >&2
+            exit 1
+          fi
+          # Exclude a tag matching the new version — `gh release create` may have
+          # created it during a previous run, and using it as the lower bound
+          # would produce an empty changelog.
+          prev_tag="$(git tag --list --sort=-v:refname 'v[0-9]*' | grep -Fxv "v$new" | head -n1 || true)"
+          if [[ -z "$prev_tag" ]]; then
+            # Fall back to the repo's first commit
+            prev_tag="$(git rev-list --max-parents=0 HEAD | tail -n1)"
+            prev_label="(initial commit)"
+          else
+            prev_label="$prev_tag"
+          fi
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "tag=v$new" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$prev_tag" >> "$GITHUB_OUTPUT"
+          echo "prev_label=$prev_label" >> "$GITHUB_OUTPUT"
+          echo "Drafting release v$new (range: $prev_label..HEAD)"
+
+      - name: Generate release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+          PREV_TAG: ${{ steps.version.outputs.prev_tag }}
+          PREV_LABEL: ${{ steps.version.outputs.prev_label }}
+          TRIGGER_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          repo = os.environ["REPO"]
+          new_version = os.environ["NEW_VERSION"]
+          prev_tag = os.environ["PREV_TAG"]
+          prev_label = os.environ["PREV_LABEL"]
+
+          BODY_CHAR_CAP = 1500
+          BODY_LINE_CAP = 20
+
+          trigger_pr_raw = os.environ.get("TRIGGER_PR_NUMBER", "").strip()
+          trigger_pr = int(trigger_pr_raw) if trigger_pr_raw.isdigit() else None
+          SKIP_LABEL = "release-bump"
+
+          def run(*args):
+              return subprocess.check_output(args, text=True).strip()
+
+          # Walk only the first-parent line on main so feature-branch commits that
+          # arrived via a merge commit appear once (as the merge itself) and aren't
+          # also enumerated under "Other commits".
+          log = run("git", "log", f"{prev_tag}..HEAD",
+                    "--first-parent", "--no-merges",
+                    "--pretty=format:%H%x09%h%x09%s", "--reverse")
+          merge_log = run("git", "log", f"{prev_tag}..HEAD",
+                          "--first-parent", "--merges",
+                          "--pretty=format:%H%x09%h%x09%s", "--reverse")
+
+          pr_re_inline = re.compile(r"\(#(\d+)\)\s*$")            # squash-merge style:  "subject (#123)"
+          pr_re_merge = re.compile(r"^Merge pull request #(\d+) ")  # true merge subject
+
+          entries = []  # list of dicts: {sha, short, subject, pr_number_or_none}
+          for line in (log.splitlines() if log else []):
+              sha, short, subject = line.split("\t", 2)
+              m = pr_re_inline.search(subject)
+              pr = int(m.group(1)) if m else None
+              entries.append({"sha": sha, "short": short, "subject": subject, "pr": pr})
+          for line in (merge_log.splitlines() if merge_log else []):
+              sha, short, subject = line.split("\t", 2)
+              m = pr_re_merge.match(subject)
+              if not m:
+                  continue
+              entries.append({"sha": sha, "short": short, "subject": subject, "pr": int(m.group(1))})
+
+          # Deduplicate by PR number — a true merge plus its squash counterpart shouldn't double up.
+          seen_prs = set()
+          pr_order = []
+          loose_commits = []
+          for e in entries:
+              if e["pr"] is None:
+                  loose_commits.append(e)
+              elif e["pr"] not in seen_prs:
+                  seen_prs.add(e["pr"])
+                  pr_order.append(e["pr"])
+
+          # Fetch PR metadata, then drop the bump PR(s) that triggered this run.
+          pr_data = {}
+          for num in pr_order:
+              try:
+                  raw = run("gh", "pr", "view", str(num),
+                            "--repo", repo,
+                            "--json", "number,title,body,author,url,labels")
+                  pr_data[num] = json.loads(raw)
+              except subprocess.CalledProcessError as exc:
+                  print(f"warning: could not fetch PR #{num}: {exc}", file=sys.stderr)
+
+          def is_bump_pr(num: int) -> bool:
+              if trigger_pr is not None and num == trigger_pr:
+                  return True
+              pr = pr_data.get(num)
+              if pr and any((lbl or {}).get("name") == SKIP_LABEL for lbl in pr.get("labels", [])):
+                  return True
+              return False
+
+          pr_order = [n for n in pr_order if not is_bump_pr(n)]
+
+          def trim_body(body: str) -> str:
+              if not body:
+                  return ""
+              body = body.strip()
+              truncated = False
+              lines = body.splitlines()
+              if len(lines) > BODY_LINE_CAP:
+                  lines = lines[:BODY_LINE_CAP]
+                  truncated = True
+              body = "\n".join(lines)
+              if len(body) > BODY_CHAR_CAP:
+                  body = body[:BODY_CHAR_CAP].rstrip()
+                  truncated = True
+              if truncated:
+                  body += "\n\n_…truncated, see full PR description._"
+              return body
+
+          out = ["## What's Changed", ""]
+          if pr_order:
+              for num in pr_order:
+                  pr = pr_data.get(num)
+                  if not pr:
+                      out.append(f"- #{num}")
+                      continue
+                  author = (pr.get("author") or {}).get("login") or "unknown"
+                  title = pr.get("title", f"PR #{num}").strip()
+                  url = pr.get("url", f"https://github.com/{repo}/pull/{num}")
+                  out.append(f"- **{title}** by @{author} in [#{num}]({url})")
+                  body = trim_body(pr.get("body") or "")
+                  if body:
+                      indented = "\n".join("  " + ln if ln else "" for ln in body.splitlines())
+                      out.append("")
+                      out.append(indented)
+                      out.append("")
+          else:
+              out.append("_No merged pull requests in this range._")
+              out.append("")
+
+          if loose_commits:
+              out.append("### Other commits")
+              out.append("")
+              for c in loose_commits:
+                  out.append(f"- {c['subject']} ({c['short']})")
+              out.append("")
+
+          if prev_label.startswith("v"):
+              compare_url = f"https://github.com/{repo}/compare/{prev_label}...v{new_version}"
+              out.append(f"**Full Changelog**: {compare_url}")
+          else:
+              out.append(f"**Full Changelog**: _no previous tag — first release_")
+
+          notes = "\n".join(out).rstrip() + "\n"
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as fh:
+              fh.write("notes<<__END_NOTES__\n")
+              fh.write(notes)
+              fh.write("\n__END_NOTES__\n")
+
+          # Also write to disk for the next step + log preview.
+          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as fh:
+              fh.write(notes)
+          print("---- generated notes ----")
+          print(notes)
+          PY
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          set -euo pipefail
+          # If a release for this tag already exists (draft or published), update notes in place; else create a new draft.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — updating notes."
+            gh release edit "$TAG" \
+              --repo "$REPO" \
+              --notes-file RELEASE_NOTES.md \
+              --title "Release $TAG"
+          else
+            echo "Creating new draft release $TAG."
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --target main \
+              --title "Release $TAG" \
+              --notes-file RELEASE_NOTES.md \
+              --draft
+          fi
