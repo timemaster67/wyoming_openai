@@ -292,10 +292,6 @@ class OpenAIEventHandler(AsyncEventHandler):
 
         await self._cleanup_realtime_transcription()
 
-        self._audio_sample_rate = sample_rate
-        self._audio_width = audio_width
-        self._audio_channels = audio_channels
-
         try:
             self._realtime_connection_manager = self._connect_realtime_transcription()
             connection = await self._enter_realtime_connection(self._realtime_connection_manager)
@@ -481,11 +477,15 @@ class OpenAIEventHandler(AsyncEventHandler):
             with contextlib.suppress(asyncio.CancelledError):
                 await receive_task
 
+        transcript_future = self._realtime_transcript_future
+        self._realtime_transcript_future = None
+        if transcript_future is not None and not transcript_future.done():
+            transcript_future.cancel()
+
         connection_manager = self._realtime_connection_manager
         connection = self._realtime_connection
         self._realtime_connection_manager = None
         self._realtime_connection = None
-        self._realtime_transcript_future = None
 
         if connection_manager is not None:
             await connection_manager.__aexit__(None, None, None)
