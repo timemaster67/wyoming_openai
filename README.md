@@ -525,12 +525,6 @@ sequenceDiagram
     
 ```
 
-## Future Plans (Descending Priority)
-
-- Improved streaming support directly to OpenAI APIs
-- Reverse direction support (Server for OpenAI compatible endpoints - possibly FastAPI)
-- OpenAI Realtime API
-
 ## Contributing
 
 Contributions are welcome! Please feel free to open issues or submit pull requests. For major changes, please first discuss the proposed changes in an issue.
