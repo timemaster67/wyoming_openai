@@ -142,6 +142,12 @@ async def main():
         default=os.getenv("STT_STREAMING_MODELS", "").split(),
         help="Space-separated list of STT model names that support streaming (e.g. gpt-4o-transcribe)",
     )
+    parser.add_argument(
+        "--stt-realtime-models",
+        nargs="+",
+        default=os.getenv("STT_REALTIME_MODELS", "").split(),
+        help="Space-separated list of STT model names that use Realtime transcription (e.g. gpt-realtime-whisper)",
+    )
 
     # TTS configuration
     parser.add_argument(
@@ -215,7 +221,7 @@ async def main():
 
     args = parser.parse_args()
 
-    stt_requested = bool(args.stt_models or args.stt_streaming_models)
+    stt_requested = bool(args.stt_models or args.stt_streaming_models or args.stt_realtime_models)
     tts_requested = bool(args.tts_models or args.tts_streaming_models)
     tts_validation_deferred = tts_requested and not args.tts_voices
 
@@ -266,7 +272,13 @@ async def main():
             tts_client = await exit_stack.enter_async_context(tts_client)
 
         asr_programs = (
-            create_asr_programs(args.stt_models, args.stt_streaming_models, args.stt_openai_url, args.languages)
+            create_asr_programs(
+                args.stt_models,
+                args.stt_streaming_models,
+                args.stt_openai_url,
+                args.languages,
+                stt_realtime_models=args.stt_realtime_models,
+            )
             if stt_requested
             else []
         )
@@ -374,6 +386,7 @@ async def main():
                 tts_instructions=args.tts_instructions,
                 stt_prompt=args.stt_prompt,
                 stt_extra_body=args.stt_extra_body,
+                stt_realtime_models=args.stt_realtime_models,
                 tts_extra_body=args.tts_extra_body,
                 tts_streaming_min_words=args.tts_streaming_min_words,
                 tts_streaming_max_chars=args.tts_streaming_max_chars,

@@ -42,22 +42,23 @@ class TtsVoiceModel(TtsVoice):
         self.backend_voice_name = self.name if backend_voice_name is None else backend_voice_name
 
 
-def _get_ordered_unique_models(models: list[str], streaming_models: list[str]) -> list[str]:
-    """Return streaming-first model names while preserving input order."""
+def _get_ordered_unique_model_names(*model_groups: list[str]) -> list[str]:
+    """Return unique model names while preserving group and input order."""
     seen = set()
     ordered_models = []
 
-    for model_name in streaming_models:
-        if model_name not in seen:
-            ordered_models.append(model_name)
-            seen.add(model_name)
-
-    for model_name in models:
-        if model_name not in seen:
-            ordered_models.append(model_name)
-            seen.add(model_name)
+    for model_group in model_groups:
+        for model_name in model_group:
+            if model_name not in seen:
+                ordered_models.append(model_name)
+                seen.add(model_name)
 
     return ordered_models
+
+
+def _get_ordered_unique_models(models: list[str], streaming_models: list[str]) -> list[str]:
+    """Return streaming-first model names while preserving input order."""
+    return _get_ordered_unique_model_names(streaming_models, models)
 
 
 def _create_tts_voice_models(
@@ -129,6 +130,7 @@ def create_asr_programs(
     stt_streaming_models: list[str],
     stt_url: str,
     languages: list[str],
+    stt_realtime_models: list[str] | None = None,
 ) -> list[AsrProgram]:
     """
     Creates a list of ASR programs, separating models based on streaming support.
@@ -138,25 +140,16 @@ def create_asr_programs(
         stt_streaming_models (list[str]): List of STT models identifiers that support streaming.
         stt_url (str): The URL for the STT service attribution.
         languages (list[str]): A list of supported languages.
+        stt_realtime_models (list[str] | None): List of STT model identifiers that use Realtime transcription.
 
     Returns:
         list[AsrProgram]: A list of Wyoming ASR programs.
     """
-    # Create ordered list: streaming models first, then non-streaming, preserving natural order and deduplicating
-    seen = set()
-    ordered_models = []
+    if stt_realtime_models is None:
+        stt_realtime_models = []
 
-    # Add streaming models first
-    for model_name in stt_streaming_models:
-        if model_name not in seen:
-            ordered_models.append(model_name)
-            seen.add(model_name)
-
-    # Add non-streaming models
-    for model_name in stt_models:
-        if model_name not in seen:
-            ordered_models.append(model_name)
-            seen.add(model_name)
+    # Create ordered list: realtime models first, then response-streaming models, then non-streaming models.
+    ordered_models = _get_ordered_unique_model_names(stt_realtime_models, stt_streaming_models, stt_models)
 
     all_asr_models = []
     for model_name in ordered_models:
@@ -171,16 +164,32 @@ def create_asr_programs(
             )
         )
 
+    realtime_asr_models = []
     streaming_asr_models = []
     non_streaming_asr_models = []
 
     for model in all_asr_models:
-        if model.name in stt_streaming_models:
+        if model.name in stt_realtime_models:
+            realtime_asr_models.append(model)
+        elif model.name in stt_streaming_models:
             streaming_asr_models.append(model)
         else:
             non_streaming_asr_models.append(model)
 
     asr_programs = []
+
+    if realtime_asr_models:
+        asr_programs.append(
+            AsrProgram(
+                name="openai-realtime",
+                description="OpenAI (Realtime)",
+                attribution=Attribution(name=ATTRIBUTION_NAME_PROGRAM_STREAMING, url=stt_url),
+                installed=True,
+                version=__version__,
+                models=realtime_asr_models,
+                supports_transcript_streaming=True,
+            )
+        )
 
     if streaming_asr_models:
         asr_programs.append(
@@ -407,7 +416,14 @@ class CustomAsyncOpenAI(AsyncOpenAI):
         if not kwargs.get("base_url"):
             kwargs["base_url"] = DEFAULT_OPENAI_BASE_URL
         self.backend: OpenAIBackend = kwargs.pop("backend", OpenAIBackend.OPENAI)
-        super().__init__(*args, **kwargs)
+        try:
+            super().__init__(*args, **kwargs)
+        except TypeError as exc:
+            if "_enforce_credentials" not in kwargs or "_enforce_credentials" not in str(exc):
+                raise
+
+            kwargs.pop("_enforce_credentials", None)
+            super().__init__(*args, **kwargs)
 
     async def _prepare_options(self, options):
         # Local keyless backends (Speaches, LocalAI, Kokoro) don't require auth.

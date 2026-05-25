@@ -260,7 +260,7 @@ async def test_main_allows_unused_stt_response_format_in_tts_only_mode(monkeypat
     async def fake_factory(*args, **kwargs):
         return _FakeClient()
 
-    for env_var in ("STT_MODELS", "STT_STREAMING_MODELS"):
+    for env_var in ("STT_MODELS", "STT_STREAMING_MODELS", "STT_REALTIME_MODELS"):
         monkeypatch.delenv(env_var, raising=False)
 
     monkeypatch.setattr(
@@ -348,7 +348,7 @@ async def test_main_skips_stt_client_creation_in_tts_only_mode(monkeypatch):
         "from_uri",
         staticmethod(lambda uri: server),
     )
-    for env_var in ("STT_MODELS", "STT_STREAMING_MODELS"):
+    for env_var in ("STT_MODELS", "STT_STREAMING_MODELS", "STT_REALTIME_MODELS"):
         monkeypatch.delenv(env_var, raising=False)
     monkeypatch.setattr(
         sys,
@@ -368,3 +368,41 @@ async def test_main_skips_stt_client_creation_in_tts_only_mode(monkeypatch):
     assert len(server.handlers) == 1
     assert server.handlers[0]._stt_client is None
     assert server.handlers[0]._tts_client is not None
+
+
+@pytest.mark.asyncio
+async def test_main_configures_realtime_stt_models(monkeypatch):
+    server = _CapturingServer()
+
+    async def fake_factory(*args, **kwargs):
+        return _FakeClient()
+
+    monkeypatch.setattr(
+        main_module.CustomAsyncOpenAI,
+        "create_autodetected_factory",
+        staticmethod(lambda: fake_factory),
+    )
+    monkeypatch.setattr(
+        main_module.AsyncServer,
+        "from_uri",
+        staticmethod(lambda uri: server),
+    )
+    for env_var in ("TTS_MODELS", "TTS_STREAMING_MODELS", "TTS_VOICES"):
+        monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming_openai",
+            "--stt-realtime-models",
+            "gpt-realtime-whisper",
+        ],
+    )
+
+    await main()
+
+    assert len(server.handlers) == 1
+    handler = server.handlers[0]
+    assert handler._stt_client is not None
+    assert handler._tts_client is None
+    assert handler._stt_realtime_models == {"gpt-realtime-whisper"}
