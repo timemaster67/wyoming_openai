@@ -140,6 +140,18 @@ jobs:
             - `pyproject.toml` — `version` field
             - `README.md` — Docker tags examples
 
+            ## Release title
+
+            <!--
+            Edit the line below before merging to set the GitHub release title.
+            `(${{ steps.version.outputs.new }})` is appended automatically if you don't include it.
+            Leave the line as `Release title:` (empty) to default to `Release ${{ steps.version.outputs.new }}`.
+            -->
+
+            Release title:
+
+            ---
+
             Merging this PR will trigger the **Draft Release** workflow, which creates a draft GitHub release with auto-generated notes. Publishing that draft release fires the existing PyPI and Docker `latest` workflows.
 
             Triggered by: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

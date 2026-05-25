@@ -10,6 +10,10 @@ on:
         description: "Version to draft (without leading v). Defaults to the version currently in pyproject.toml."
         required: false
         type: string
+      title:
+        description: "Release title. `(X.Y.Z)` is appended automatically if not already present. Leave blank for `Release X.Y.Z`."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -61,6 +65,32 @@ jobs:
           echo "prev_label=$prev_label" >> "$GITHUB_OUTPUT"
           echo "Drafting release v$new (range: $prev_label..HEAD)"
 
+      - name: Resolve title
+        id: title
+        env:
+          INPUT_TITLE: ${{ inputs.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          set -euo pipefail
+          title="${INPUT_TITLE:-}"
+          new="$NEW_VERSION"
+          # Fall back to a `Release title:` line in the merged bump PR body.
+          if [[ -z "$title" && -n "${PR_BODY:-}" ]]; then
+            title="$(printf '%s\n' "$PR_BODY" | grep -m1 -E '^[[:space:]]*Release title:' | sed -E 's/^[[:space:]]*Release title:[[:space:]]*//' || true)"
+          fi
+          # Trim leading/trailing whitespace.
+          title="$(printf '%s' "$title" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          if [[ -z "$title" ]]; then
+            final="Release ${new}"
+          elif [[ "$title" == *"(${new})"* ]]; then
+            final="$title"
+          else
+            final="${title} (${new})"
+          fi
+          echo "final=$final" >> "$GITHUB_OUTPUT"
+          echo "Resolved title: $final"
+
       - name: Generate release notes
         id: notes
         env:
@@ -84,8 +114,7 @@ jobs:
           prev_tag = os.environ["PREV_TAG"]
           prev_label = os.environ["PREV_LABEL"]
 
-          BODY_CHAR_CAP = 1500
-          BODY_LINE_CAP = 20
+          BODY_CHAR_CAP = 200
 
           trigger_pr_raw = os.environ.get("TRIGGER_PR_NUMBER", "").strip()
           trigger_pr = int(trigger_pr_raw) if trigger_pr_raw.isdigit() else None
@@ -153,21 +182,36 @@ jobs:
           pr_order = [n for n in pr_order if not is_bump_pr(n)]
 
           def trim_body(body: str) -> str:
+              """Return a one-line tease: the first non-header content paragraph, capped to BODY_CHAR_CAP."""
               if not body:
                   return ""
-              body = body.strip()
-              truncated = False
-              lines = body.splitlines()
-              if len(lines) > BODY_LINE_CAP:
-                  lines = lines[:BODY_LINE_CAP]
-                  truncated = True
-              body = "\n".join(lines)
-              if len(body) > BODY_CHAR_CAP:
-                  body = body[:BODY_CHAR_CAP].rstrip()
-                  truncated = True
-              if truncated:
-                  body += "\n\n_…truncated, see full PR description._"
-              return body
+              # Strip HTML comments first — the repo PR template ships guidance in
+              # `<!-- ... -->` blocks that would otherwise be picked as the summary.
+              body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+              paragraphs = []
+              current = []
+              for ln in body.splitlines():
+                  stripped = ln.strip()
+                  if not stripped:
+                      if current:
+                          paragraphs.append(" ".join(current))
+                          current = []
+                      continue
+                  # Skip markdown headers (## Summary, ### Details, etc.) without ending the surrounding paragraph.
+                  if stripped.startswith("#"):
+                      if current:
+                          paragraphs.append(" ".join(current))
+                          current = []
+                      continue
+                  current.append(stripped)
+              if current:
+                  paragraphs.append(" ".join(current))
+              text = next((p for p in paragraphs if p), "")
+              if not text:
+                  return ""
+              if len(text) > BODY_CHAR_CAP:
+                  text = text[:BODY_CHAR_CAP].rstrip() + "…"
+              return text
 
           out = ["## What's Changed", ""]
           if pr_order:
@@ -182,10 +226,7 @@ jobs:
                   out.append(f"- **{title}** by @{author} in [#{num}]({url})")
                   body = trim_body(pr.get("body") or "")
                   if body:
-                      indented = "\n".join("  " + ln if ln else "" for ln in body.splitlines())
-                      out.append("")
-                      out.append(indented)
-                      out.append("")
+                      out.append(f"  {body}")
           else:
               out.append("_No merged pull requests in this range._")
               out.append("")
@@ -224,6 +265,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ steps.version.outputs.tag }}
           NEW_VERSION: ${{ steps.version.outputs.new }}
+          TITLE: ${{ steps.title.outputs.final }}
         run: |
           set -euo pipefail
           # If a release for this tag already exists (draft or published), update notes in place; else create a new draft.
@@ -232,13 +274,13 @@ jobs:
             gh release edit "$TAG" \
               --repo "$REPO" \
               --notes-file RELEASE_NOTES.md \
-              --title "Release $TAG"
+              --title "$TITLE"
           else
             echo "Creating new draft release $TAG."
             gh release create "$TAG" \
               --repo "$REPO" \
               --target main \
-              --title "Release $TAG" \
+              --title "$TITLE" \
               --notes-file RELEASE_NOTES.md \
               --draft
           fi
