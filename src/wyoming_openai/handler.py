@@ -633,7 +633,7 @@ class OpenAIEventHandler(AsyncEventHandler):
                     extra_body.pop("stream", None)
                     request_body.update(extra_body)
 
-                transcription = await self._stt_client.post("/audio/transcriptions", cast_to=dict, body=request_body)
+                transcription = await self._stt_client.post("/audio/transcriptions", cast_to=object, body=request_body)
             else:
                 transcription_kwargs = {
                     "file": self._wav_buffer,

@@ -737,6 +737,7 @@ class TestOpenAIEventHandlerComprehensive:
 
         stt_client.post.assert_called_once()
         assert stt_client.post.call_args[0][0] == "/audio/transcriptions"
+        assert stt_client.post.call_args[1]["cast_to"] is object
         body = stt_client.post.call_args[1]["body"]
         assert body["model"] == "whisper-1"
         assert body["input_audio"]["format"] == "wav"
