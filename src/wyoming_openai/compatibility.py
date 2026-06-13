@@ -402,6 +402,7 @@ class OpenAIBackend(Enum):
     SPEACHES = 1
     KOKORO_FASTAPI = 2
     LOCALAI = 3
+    OPENROUTER = 4
 
 
 class CustomAsyncOpenAI(AsyncOpenAI):
@@ -606,6 +607,17 @@ class CustomAsyncOpenAI(AsyncOpenAI):
             return False
 
     @classmethod
+    def _is_openrouter_domain(cls, base_url: str | None) -> bool:
+        """Check if the base URL points to an OpenRouter endpoint."""
+        if not base_url:
+            return False
+        try:
+            hostname = urlparse(str(base_url)).hostname
+            return bool(hostname and hostname.endswith("openrouter.ai"))
+        except Exception:
+            return False
+
+    @classmethod
     def create_autodetected_factory(cls):
         """
         Create a factory that autodetects the backend type.
@@ -619,6 +631,11 @@ class CustomAsyncOpenAI(AsyncOpenAI):
             if cls._is_openai_domain(resolved_base_url):
                 _LOGGER.debug("OpenAI domain detected, skipping backend autodetection")
                 client.backend = OpenAIBackend.OPENAI
+                return client
+
+            if cls._is_openrouter_domain(resolved_base_url):
+                _LOGGER.debug("OpenRouter domain detected, skipping backend autodetection")
+                client.backend = OpenAIBackend.OPENROUTER
                 return client
 
             if await client._is_localai():

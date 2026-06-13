@@ -721,6 +721,33 @@ class TestOpenAIEventHandlerComprehensive:
         assert transcript_found
 
     @pytest.mark.asyncio
+    async def test_handle_transcribe_event_openrouter_uses_json_body(self, enhanced_handler, mock_clients):
+        stt_client, _ = mock_clients
+        stt_client.backend = OpenAIBackend.OPENROUTER
+        stt_client.post = AsyncMock(return_value={"text": "OpenRouter transcription"})
+
+        transcribe_event = Event(type="transcribe", data={"language": "en", "name": "whisper-1"})
+        assert await enhanced_handler.handle_event(transcribe_event) is True
+
+        await enhanced_handler.handle_event(Event(type="audio-start", data={"rate": 16000, "width": 2, "channels": 1}))
+        await enhanced_handler.handle_event(
+            Event(type="audio-chunk", data={"rate": 16000, "width": 2, "channels": 1}, payload=b"\x00\x01" * 1000)
+        )
+        await enhanced_handler.handle_event(Event(type="audio-stop"))
+
+        stt_client.post.assert_called_once()
+        assert stt_client.post.call_args[0][0] == "/audio/transcriptions"
+        body = stt_client.post.call_args[1]["body"]
+        assert body["model"] == "whisper-1"
+        assert body["input_audio"]["format"] == "wav"
+        assert "data" in body["input_audio"]
+
+        transcript_found = any(
+            Transcript.is_type(call.args[0].type) for call in enhanced_handler.write_event.call_args_list
+        )
+        assert transcript_found
+
+    @pytest.mark.asyncio
     async def test_handle_realtime_transcription_flow(self, enhanced_handler, mock_info, mock_clients):
         """Test realtime STT emits deltas, final transcript, and cleanup without audio transcriptions API."""
         stt_client, _ = mock_clients

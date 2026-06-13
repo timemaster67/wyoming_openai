@@ -615,19 +615,39 @@ class OpenAIEventHandler(AsyncEventHandler):
                 body_name="STT",
             )
 
-            transcription_kwargs = {
-                "file": self._wav_buffer,
-                "model": self._current_asr_model.name,
-                "language": self._current_language if self._current_language is not None else omit,
-                "temperature": self._stt_temperature if self._stt_temperature is not None else omit,
-                "prompt": self._stt_prompt if self._stt_prompt is not None else omit,
-                "response_format": "json",
-                "stream": use_streaming if use_streaming else omit,
-            }
-            if extra_body:
-                transcription_kwargs["extra_body"] = extra_body
+            if self._stt_client.backend == OpenAIBackend.OPENROUTER:
+                # OpenRouter expects JSON audio transcription requests instead of multipart.
+                request_body: dict[str, object] = {
+                    "model": self._current_asr_model.name,
+                    "input_audio": {
+                        "data": base64.b64encode(self._wav_buffer.getvalue()).decode("ascii"),
+                        "format": "wav",
+                    },
+                }
+                if self._current_language is not None:
+                    request_body["language"] = self._current_language
+                if self._stt_temperature is not None:
+                    request_body["temperature"] = self._stt_temperature
+                if extra_body:
+                    extra_body = dict(extra_body)
+                    extra_body.pop("stream", None)
+                    request_body.update(extra_body)
 
-            transcription = await self._stt_client.audio.transcriptions.create(**transcription_kwargs)
+                transcription = await self._stt_client.post("/audio/transcriptions", cast_to=dict, body=request_body)
+            else:
+                transcription_kwargs = {
+                    "file": self._wav_buffer,
+                    "model": self._current_asr_model.name,
+                    "language": self._current_language if self._current_language is not None else omit,
+                    "temperature": self._stt_temperature if self._stt_temperature is not None else omit,
+                    "prompt": self._stt_prompt if self._stt_prompt is not None else omit,
+                    "response_format": "json",
+                    "stream": use_streaming if use_streaming else omit,
+                }
+                if extra_body:
+                    transcription_kwargs["extra_body"] = extra_body
+
+                transcription = await self._stt_client.audio.transcriptions.create(**transcription_kwargs)
 
             await self.write_event(TranscriptStart().event())
 
@@ -658,7 +678,14 @@ class OpenAIEventHandler(AsyncEventHandler):
                 else:
                     _LOGGER.warning("Received empty transcription result")
                 await self.write_event(Transcript(text=transcription.text).event())
-
+            elif isinstance(transcription, dict):
+                _LOGGER.debug("Handling OpenRouter transcription response")
+                text = transcription.get("text", "")
+                if text:
+                    _LOGGER.info("Successfully transcribed: %s", _truncate_for_log(text))
+                else:
+                    _LOGGER.warning("Received empty transcription result")
+                await self.write_event(Transcript(text=text).event())
             else:
                 _LOGGER.error("Unexpected transcription response type: %s", type(transcription))
 

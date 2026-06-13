@@ -270,6 +270,9 @@ class TestCustomAsyncOpenAI:
                 mock_speaches.assert_not_called()
                 mock_kokoro.assert_not_called()
 
+        client = await factory(api_key="test-key", base_url="https://openrouter.ai/api/v1")
+        assert client.backend == OpenAIBackend.OPENROUTER
+
     @pytest.mark.asyncio
     async def test_list_supported_voices_openai(self):
         """Test listing supported voices for OpenAI backend."""
